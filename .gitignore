@@ -1,0 +1,22 @@
+# SQLite Database Files
+*.db
+*.sqlite3
+database/*.db
+
+# Python Bytecode & Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Virtual Environments
+venv/
+env/
+.venv/
+
+# Environment Variables & Keys
+.env
+
+# Generated Output Assets
+charts/*.png
