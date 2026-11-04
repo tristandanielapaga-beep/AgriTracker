@@ -132,3 +132,43 @@ def delete_record_interactive():
             print("Deletion cancelled.")
     except ValueError:
         print("Error: Invalid Record ID input.")
+        
+def search_records_interactive():
+    """Prompt user for a search query and display matching records."""
+    query = input("Enter search term (Crop Name, Category, or Location): ").strip()
+    if not query:
+        print("Search cancelled or blank query entered.")
+        return
+
+    results = database.search_records(query)
+    if not results:
+        print(f"\nNo records matched '{query}'.")
+        return
+
+    print(f"\n--- Search Results for '{query}' ---")
+    print("-" * 95)
+    print(f"{'ID':<4} | {'Crop Name':<18} | {'Category':<10} | {'Location':<18} | {'Harvest Date':<12} | {'Qty (kg)':<9} | {'Cost':<10}")
+    print("-" * 95)
+    for row in results:
+        print(f"{row['record_id']:<4} | {row['crop_name']:<18} | {row['category']:<10} | {row['farm_location']:<18} | {row['harvest_status']:<12} | {row['harvest_qty_kg']:<9.1f} | {row['production_cost']:<10.2f}")
+    print("-" * 95)
+
+
+def update_record_interactive():
+    """Prompt user to update harvest details for a given record ID."""
+    view_all_records()
+    try:
+        rec_id = int(input("\nEnter Record ID to update harvest details (0 to cancel): ").strip())
+        if rec_id == 0:
+            return
+
+        harvest_date = get_valid_date("Enter Harvest Date (YYYY-MM-DD): ")
+        harvest_qty = get_positive_float("Enter Harvest Quantity (kg): ", allow_zero=True)
+
+        success = database.update_harvest_record(rec_id, harvest_date, harvest_qty)
+        if success:
+            print(f"Success: Record #{rec_id} harvest details updated!")
+        else:
+            print(f"Error: Record #{rec_id} was not found.")
+    except ValueError:
+        print("Error: Invalid Record ID.")

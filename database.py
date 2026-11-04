@@ -163,6 +163,41 @@ def delete_record_by_id(record_id):
     conn.close()
     return rows_affected > 0
 
+def search_records(keyword):
+    """Search records by crop name, category, or farm location."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    query = """
+        SELECT p.record_id, c.crop_name, c.category, p.farm_location, 
+               p.planting_date, COALESCE(p.harvest_date, 'In Progress') AS harvest_status, 
+               p.harvest_qty_kg, p.production_cost
+        FROM production_records p
+        JOIN crops c ON p.crop_id = c.crop_id
+        WHERE c.crop_name LIKE ? OR c.category LIKE ? OR p.farm_location LIKE ?
+        ORDER BY p.record_id DESC;
+    """
+    pattern = f"%{keyword}%"
+    cursor.execute(query, (pattern, pattern, pattern))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def update_harvest_record(record_id, harvest_date, harvest_qty):
+    """Update harvest details for an existing production record."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    query = """
+        UPDATE production_records
+        SET harvest_date = ?, harvest_qty_kg = ?
+        WHERE record_id = ?;
+    """
+    cursor.execute(query, (harvest_date, harvest_qty, record_id))
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
 
 if __name__ == "__main__":
     # Setup test run when running database.py directly
