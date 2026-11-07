@@ -1,174 +1,329 @@
-from datetime import datetime
-import database
-import os
+import sqlite3
+from datetime import datetime, timedelta
+from typing import List, Dict, Any, Tuple
 
-def clear_screen():
-    """Utility function to clear text in terminal."""
-    os.system('cls' if os.name == 'nt' else 'clear')
+import database as db
+import ml_model
 
+# PAGASA Climate Sub-Season Definition (Philippines)
+SUB_SEASON_MONTHS = {
+    "Cool Dry": {11, 12, 1, 2},
+    "Hot Dry": {3, 4, 5},
+    "Wet": {6, 7, 8, 9, 10},
+    "Year-Round": set(range(1, 13))
+}
 
-def get_non_empty_string(prompt):
-    """Prompt user for input and validate that it is not blank."""
-    while True:
-        value = input(prompt).strip()
-        if value:
-            return value
-        print("Error: Input cannot be empty. Please try again.")
+# --- 1. Validation Helpers ---
 
+def validate_date_format(date_str: str) -> bool:
+    """Validates if a string adheres strictly to ISO format (YYYY-MM-DD)."""
+    try:
+        datetime.strptime(date_str.strip(), "%Y-%m-%d")
+        return True
+    except (ValueError, AttributeError):
+        return False
 
-def get_positive_float(prompt, allow_zero=False):
-    """Prompt user and validate a positive floating-point number."""
-    while True:
-        try:
-            val_str = input(prompt).strip()
-            val = float(val_str)
-            if allow_zero and val >= 0:
-                return val
-            elif not allow_zero and val > 0:
-                return val
-            else:
-                msg = "zero or greater" if allow_zero else "greater than zero"
-                print(f"Error: Value must be {msg}.")
-        except ValueError:
-            print("Error: Invalid number format. Please enter a valid decimal number.")
+def validate_harvest_after_planting(planting_date_str: str, harvest_date_str: str) -> bool:
+    """Enforces rule: Harvest Date >= Planting Date."""
+    if not validate_date_format(planting_date_str) or not validate_date_format(harvest_date_str):
+        return False
+    plant_dt = datetime.strptime(planting_date_str.strip(), "%Y-%m-%d")
+    harvest_dt = datetime.strptime(harvest_date_str.strip(), "%Y-%m-%d")
+    return harvest_dt >= plant_dt
 
+def validate_positive_number(val: Any) -> bool:
+    """Ensures numeric inputs are strictly positive (> 0)."""
+    try:
+        num = float(val)
+        return num > 0
+    except (ValueError, TypeError):
+        return False
 
-def get_valid_date(prompt, allow_optional=False):
-    """Prompt user and validate date string format (YYYY-MM-DD)."""
-    while True:
-        date_str = input(prompt).strip()
-        if allow_optional and not date_str:
-            return None  # Represents ongoing/unharvested crop
-            
-        try:
-            valid_date = datetime.strptime(date_str, "%Y-%m-%d")
-            return valid_date.strftime("%Y-%m-%d")
-        except ValueError:
-            print("Error: Date must be in YYYY-MM-DD format (e.g., 2026-05-15).")
+def validate_non_negative_number(val: Any) -> bool:
+    """Ensures numeric inputs are non-negative (>= 0)."""
+    try:
+        num = float(val)
+        return num >= 0
+    except (ValueError, TypeError):
+        return False
 
+# --- 2. Agronomic & Seasonality Calculation Engines ---
 
-def select_crop_from_menu():
-    """Display available crops from the database and prompt user to select one."""
-    crops = database.fetch_all_crops()
-    if not crops:
-        print("No crops found in the database.")
-        return None
-
-    print("\n--- Available Crops ---")
-    for crop in crops:
-        print(f"[{crop['crop_id']}] {crop['crop_name']} ({crop['category']}) - Growth: {crop['typical_growth_days']} days")
+def calculate_target_harvest_window(planting_date_str: str, min_days: int, max_days: int) -> Tuple[str, str]:
+    """
+    Computes the operational min and max target harvest dates based on crop maturity specs.
+    """
+    plant_dt = datetime.strptime(planting_date_str.strip(), "%Y-%m-%d")
+    min_harvest_dt = plant_dt + timedelta(days=int(min_days))
+    max_harvest_dt = plant_dt + timedelta(days=int(max_days))
     
-    valid_ids = [crop['crop_id'] for crop in crops]
-    while True:
-        try:
-            selected_id = int(input("\nSelect Crop ID: ").strip())
-            if selected_id in valid_ids:
-                return selected_id
-            print("Error: Selected Crop ID does not exist.")
-        except ValueError:
-            print("Error: Please enter a valid numerical ID.")
+    return min_harvest_dt.strftime("%Y-%m-%d"), max_harvest_dt.strftime("%Y-%m-%d")
 
+def evaluate_harvest_timing(actual_harvest_date_str: str, min_harvest_date_str: str, max_harvest_date_str: str) -> str:
+    """
+    Evaluates harvest timing status against expected growth duration windows:
+    - Premature: Harvested before min growth days.
+    - On-Time: Harvested within [min_days, max_days] window.
+    - Overdue: Harvested after max growth days.
+    """
+    actual_dt = datetime.strptime(actual_harvest_date_str.strip(), "%Y-%m-%d")
+    min_dt = datetime.strptime(min_harvest_date_str.strip(), "%Y-%m-%d")
+    max_dt = datetime.strptime(max_harvest_date_str.strip(), "%Y-%m-%d")
 
-def add_new_production_record():
-    """Gather and validate inputs before saving a new record to the database."""
-    print("\n--- Add New Production Record ---")
-    crop_id = select_crop_from_menu()
-    if not crop_id:
-        return
-
-    location = get_non_empty_string("Enter Farm Location (e.g., Field Alpha): ")
-    area = get_positive_float("Enter Area Size in Hectares: ")
-    planting_date = get_valid_date("Enter Planting Date (YYYY-MM-DD): ")
-    
-    is_harvested = input("Has this crop been harvested yet? (y/n): ").strip().lower()
-    if is_harvested == 'y':
-        harvest_date = get_valid_date("Enter Harvest Date (YYYY-MM-DD): ")
-        harvest_qty = get_positive_float("Enter Harvest Quantity (kg): ", allow_zero=True)
+    if actual_dt < min_dt:
+        return "Premature"
+    elif min_dt <= actual_dt <= max_dt:
+        return "On-Time"
     else:
-        harvest_date = None
-        harvest_qty = 0.0
+        return "Overdue"
 
-    cost = get_positive_float("Enter Total Production Cost ($/PHP): ", allow_zero=True)
+def compute_pagasa_overlap(planting_date_str: str, growth_days: int, preferred_sub_season: str) -> Tuple[float, str]:
+    """
+    Calculates exact daily growth overlap against PAGASA climate sub-seasons:
+    - In-Season (>= 75% overlap)
+    - Transition / Partial (40% - 74% overlap)
+    - Off-Season (< 40% overlap)
+    """
+    plant_dt = datetime.strptime(planting_date_str.strip(), "%Y-%m-%d")
+    planting_month = plant_dt.month
+    
+    overlap_ratio = ml_model.calculate_season_overlap_ratio(planting_month, growth_days, preferred_sub_season)
+    
+    if overlap_ratio >= 0.75:
+        seasonality_tag = "In-Season"
+    elif overlap_ratio >= 0.40:
+        seasonality_tag = "Transition / Partial"
+    else:
+        seasonality_tag = "Off-Season"
 
-    record_id = database.insert_production_record(
-        crop_id, location, area, planting_date, harvest_date, harvest_qty, cost
+    return overlap_ratio, seasonality_tag
+
+def calculate_yield_variance_pct(predicted_kg: float, actual_kg: float) -> float:
+    """
+    Computes over/under prediction percentage:
+    ((Actual - Predicted) / Predicted) * 100
+    Returns +% for over-performance, -% for under-performance.
+    """
+    if predicted_kg <= 0:
+        return 0.0
+    variance = ((actual_kg - predicted_kg) / predicted_kg) * 100.0
+    return round(float(variance), 2)
+
+# --- 3. Operational Ledger Pagination Engine ---
+
+def paginate_records(records: List[Dict[str, Any]], page: int = 1, page_size: int = 10) -> Dict[str, Any]:
+    """
+    Paginates an arbitrary list of dictionary records.
+    Returns structured pagination metadata package.
+    """
+    total_records = len(records)
+    if total_records == 0:
+        return {
+            "items": [],
+            "current_page": 1,
+            "total_pages": 1,
+            "page_size": page_size,
+            "total_records": 0
+        }
+
+    total_pages = (total_records + page_size - 1) // page_size
+    current_page = max(1, min(page, total_pages))
+
+    start_idx = (current_page - 1) * page_size
+    end_idx = start_idx + page_size
+    paginated_items = records[start_idx:end_idx]
+
+    return {
+        "items": paginated_items,
+        "current_page": current_page,
+        "total_pages": total_pages,
+        "page_size": page_size,
+        "total_records": total_records
+    }
+
+# --- 4. Transaction Workflows (Decoupled Business API) ---
+
+def add_crop_type(crop_name: str, category: str, min_growth_days: int, max_growth_days: int, preferred_sub_season: str) -> Dict[str, Any]:
+    """Registers a new crop variant in the SQLite catalog."""
+    if not crop_name.strip():
+        return {"success": False, "message": "Crop name cannot be empty."}
+    if min_growth_days <= 0 or max_growth_days < min_growth_days:
+        return {"success": False, "message": "Invalid growth duration ranges."}
+    if preferred_sub_season not in SUB_SEASON_MONTHS:
+        return {"success": False, "message": "Invalid PAGASA sub-season target."}
+
+    try:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO crops (crop_name, category, min_growth_days, max_growth_days, preferred_sub_season)
+                VALUES (?, ?, ?, ?, ?);
+            """, (crop_name.strip(), category.strip(), int(min_growth_days), int(max_growth_days), preferred_sub_season.strip()))
+            conn.commit()
+            new_id = cursor.lastrowid
+        return {"success": True, "message": f"Crop '{crop_name}' registered successfully.", "crop_id": new_id}
+    except sqlite3.IntegrityError:
+        return {"success": False, "message": f"Crop name '{crop_name}' already exists in catalog."}
+
+def add_farm_location(location_name: str, field_type: str, area_hectares: float) -> Dict[str, Any]:
+    """Registers a reusable farm plot in the locations catalog."""
+    if not location_name.strip():
+        return {"success": False, "message": "Location name cannot be empty."}
+    if not validate_positive_number(area_hectares):
+        return {"success": False, "message": "Area in hectares must be strictly positive (> 0)."}
+
+    try:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO locations (location_name, field_type, area_hectares)
+                VALUES (?, ?, ?);
+            """, (location_name.strip(), field_type.strip(), float(area_hectares)))
+            conn.commit()
+            new_id = cursor.lastrowid
+        return {"success": True, "message": f"Location '{location_name}' registered successfully.", "location_id": new_id}
+    except sqlite3.IntegrityError:
+        return {"success": False, "message": f"Location '{location_name}' already exists."}
+
+def create_planting_operation(
+    crop_id: int, 
+    location_id: int, 
+    planting_date_str: str, 
+    initial_budget_php: float = 0.0,
+    initial_expense_description: str = "Initial Land Prep & Planting"
+) -> Dict[str, Any]:
+    """
+    Executes complete planting workflow:
+    1. Fetches metadata from crops & locations tables.
+    2. Calculates target harvest windows and PAGASA overlap ratio.
+    3. Triggers ML prediction engine for predicted yield output.
+    4. Inserts production record and logs initial itemized expense (if budget > 0).
+    """
+    if not validate_date_format(planting_date_str):
+        return {"success": False, "message": "Invalid planting date format. Use YYYY-MM-DD."}
+
+    crops = {c["crop_id"]: c for c in db.fetch_all_crops()}
+    locations = {l["location_id"]: l for l in db.fetch_all_locations()}
+
+    if crop_id not in crops:
+        return {"success": False, "message": f"Crop ID {crop_id} not found."}
+    if location_id not in locations:
+        return {"success": False, "message": f"Location ID {location_id} not found."}
+
+    crop = crops[crop_id]
+    loc = locations[location_id]
+
+    # Calculate operational target dates
+    target_min, target_max = calculate_target_harvest_window(
+        planting_date_str, crop["min_growth_days"], crop["max_growth_days"]
     )
-    print(f"\nSuccess: Production Record #{record_id} saved successfully!")
 
+    # Compute PAGASA Sub-Season Overlap Ratio
+    plant_dt = datetime.strptime(planting_date_str.strip(), "%Y-%m-%d")
+    overlap_ratio, season_tag = compute_pagasa_overlap(
+        planting_date_str, crop["min_growth_days"], crop["preferred_sub_season"]
+    )
 
-def view_all_records():
-    """Fetch and display stored production records in a clean tabular view."""
-    records = database.fetch_joined_records()
-    if not records:
-        print("\nNo records found in the database.")
-        return
+    # Compute budget per hectare for ML prediction engine
+    area_ha = loc["area_hectares"]
+    budget_per_ha = (initial_budget_php / area_ha) if initial_budget_php > 0 else 25000.0
 
-    print("\n" + "-" * 95)
-    print(f"{'ID':<4} | {'Crop Name':<18} | {'Category':<10} | {'Location':<18} | {'Harvest Date':<12} | {'Qty (kg)':<9} | {'Cost':<10}")
-    print("-" * 95)
+    # Call Scikit-Learn ML Model Prediction Engine
+    predicted_yield_kg = ml_model.predict_crop_yield(
+        category=crop["category"],
+        min_days=crop["min_growth_days"],
+        max_days=crop["max_growth_days"],
+        area_ha=loc["area_hectares"],
+        budget_per_ha=budget_per_ha,
+        field_type=loc["field_type"],
+        planting_month=plant_dt.month,
+        season_overlap_ratio=overlap_ratio
+    )
 
-    for row in records:
-        print(f"{row['record_id']:<4} | {row['crop_name']:<18} | {row['category']:<10} | {row['farm_location']:<18} | {row['harvest_status']:<12} | {row['harvest_qty_kg']:<9.1f} | {row['production_cost']:<10.2f}")
-    print("-" * 95)
-
-
-def delete_record_interactive():
-    """Prompt for a record ID, request confirmation, and delete it."""
-    view_all_records()
-    try:
-        rec_id = int(input("\nEnter Record ID to delete (or 0 to cancel): ").strip())
-        if rec_id == 0:
-            print("Deletion cancelled.")
-            return
-
-        confirm = input(f"Are you sure you want to delete Record #{rec_id}? (y/n): ").strip().lower()
-        if confirm == 'y':
-            success = database.delete_record_by_id(rec_id)
-            if success:
-                print(f"Record #{rec_id} deleted successfully.")
-            else:
-                print(f"Error: Record #{rec_id} was not found.")
-        else:
-            print("Deletion cancelled.")
-    except ValueError:
-        print("Error: Invalid Record ID input.")
+    # Database Transaction
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO production_records (
+                crop_id, location_id, planting_date, target_min_harvest_date, target_max_harvest_date,
+                predicted_yield_kg, actual_yield_kg, yield_variance_pct, total_expenses_php, status, is_historical
+            ) VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, 0.0, 'In Progress', 0);
+        """, (crop_id, location_id, planting_date_str.strip(), target_min, target_max, predicted_yield_kg))
         
-def search_records_interactive():
-    """Prompt user for a search query and display matching records."""
-    query = input("Enter search term (Crop Name, Category, or Location): ").strip()
-    if not query:
-        print("Search cancelled or blank query entered.")
-        return
+        record_id = cursor.lastrowid
+        conn.commit()
 
-    results = database.search_records(query)
-    if not results:
-        print(f"\nNo records matched '{query}'.")
-        return
+    # Log initial seed/planting budget expense if specified
+    if initial_budget_php > 0:
+        db.add_itemized_expense(
+            record_id=record_id,
+            category="Seeds/Seedlings",
+            description=initial_expense_description,
+            amount_php=float(initial_budget_php),
+            date_logged=planting_date_str.strip()
+        )
 
-    print(f"\n--- Search Results for '{query}' ---")
-    print("-" * 95)
-    print(f"{'ID':<4} | {'Crop Name':<18} | {'Category':<10} | {'Location':<18} | {'Harvest Date':<12} | {'Qty (kg)':<9} | {'Cost':<10}")
-    print("-" * 95)
-    for row in results:
-        print(f"{row['record_id']:<4} | {row['crop_name']:<18} | {row['category']:<10} | {row['farm_location']:<18} | {row['harvest_status']:<12} | {row['harvest_qty_kg']:<9.1f} | {row['production_cost']:<10.2f}")
-    print("-" * 95)
+    return {
+        "success": True,
+        "record_id": record_id,
+        "predicted_yield_kg": predicted_yield_kg,
+        "target_min_harvest_date": target_min,
+        "target_max_harvest_date": target_max,
+        "seasonality_tag": season_tag,
+        "season_overlap_ratio": overlap_ratio,
+        "message": f"Planting logged successfully (Record #{record_id}). ML Predicted Yield: {predicted_yield_kg:,.2f} kg ({season_tag})."
+    }
 
+def record_harvest_completion(record_id: int, actual_harvest_date_str: str, actual_yield_kg: float) -> Dict[str, Any]:
+    """
+    Executes harvest completion workflow:
+    1. Validates harvest date vs planting date.
+    2. Calculates yield variance percentage vs ML prediction.
+    3. Evaluates timing status (Premature, On-Time, Overdue).
+    4. Updates database record status to 'Completed'.
+    """
+    if not validate_date_format(actual_harvest_date_str):
+        return {"success": False, "message": "Invalid harvest date format. Use YYYY-MM-DD."}
+    if not validate_non_negative_number(actual_yield_kg):
+        return {"success": False, "message": "Actual harvest weight must be non-negative (>= 0)."}
 
-def update_record_interactive():
-    """Prompt user to update harvest details for a given record ID."""
-    view_all_records()
-    try:
-        rec_id = int(input("\nEnter Record ID to update harvest details (0 to cancel): ").strip())
-        if rec_id == 0:
-            return
+    records = {r["record_id"]: r for r in db.fetch_joined_records()}
+    if record_id not in records:
+        return {"success": False, "message": f"Production Record ID #{record_id} not found."}
 
-        harvest_date = get_valid_date("Enter Harvest Date (YYYY-MM-DD): ")
-        harvest_qty = get_positive_float("Enter Harvest Quantity (kg): ", allow_zero=True)
+    record = records[record_id]
+    
+    if not validate_harvest_after_planting(record["planting_date"], actual_harvest_date_str):
+        return {"success": False, "message": f"Harvest date ({actual_harvest_date_str}) cannot precede planting date ({record['planting_date']})."}
 
-        success = database.update_harvest_record(rec_id, harvest_date, harvest_qty)
-        if success:
-            print(f"Success: Record #{rec_id} harvest details updated!")
-        else:
-            print(f"Error: Record #{rec_id} was not found.")
-    except ValueError:
-        print("Error: Invalid Record ID.")
+    # Calculate yield variance percentage
+    variance_pct = calculate_yield_variance_pct(record["predicted_yield_kg"], actual_yield_kg)
+    
+    # Evaluate harvest timing status
+    timing_status = evaluate_harvest_timing(
+        actual_harvest_date_str, record["target_min_harvest_date"], record["target_max_harvest_date"]
+    )
+
+    # Commit update to SQLite
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE production_records
+            SET actual_harvest_date = ?,
+                actual_yield_kg = ?,
+                yield_variance_pct = ?,
+                status = 'Completed'
+            WHERE record_id = ?;
+        """, (actual_harvest_date_str.strip(), float(actual_yield_kg), variance_pct, record_id))
+        conn.commit()
+
+    variance_sign = "+" if variance_pct > 0 else ""
+    return {
+        "success": True,
+        "record_id": record_id,
+        "actual_yield_kg": actual_yield_kg,
+        "predicted_yield_kg": record["predicted_yield_kg"],
+        "variance_pct": variance_pct,
+        "timing_status": timing_status,
+        "message": f"Harvest logged for Record #{record_id}. Yield: {actual_yield_kg:,.2f} kg (Variance: {variance_sign}{variance_pct:.2f}%, Timing: {timing_status})."
+    }
