@@ -1,6 +1,6 @@
 import sqlite3
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 import database as db
 import ml_model
