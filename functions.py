@@ -46,6 +46,40 @@ def validate_non_negative_number(val: Any) -> bool:
         return num >= 0
     except (ValueError, TypeError):
         return False
+def validate_expense_date(
+    expense_date_str: str, 
+    planting_date_str: str, 
+    actual_harvest_date_str: Optional[str] = None, 
+    max_pre_days: int = 90, 
+    max_post_days: int = 30
+) -> Tuple[bool, str]:
+    """
+    Validates that an expense date falls within a realistic agronomic window:
+    - No earlier than 90 days before planting (pre-planting inputs/seeds)
+    - No later than 30 days after harvest (post-harvest processing/labor)
+    """
+    if not validate_date_format(expense_date_str):
+        return False, "Invalid date format. Use strict zero-padded format YYYY-MM-DD (e.g., 2024-04-12)."
+
+    try:
+        exp_dt = datetime.strptime(expense_date_str.strip(), "%Y-%m-%d")
+        plant_dt = datetime.strptime(planting_date_str.strip(), "%Y-%m-%d")
+    except ValueError:
+        return False, "Invalid calendar date."
+
+    # 1. Lower Bound Guard: Max 90 days before planting
+    min_allowed_dt = plant_dt - timedelta(days=max_pre_days)
+    if exp_dt < min_allowed_dt:
+        return False, f"Expense date ({expense_date_str}) is too far in the past. Pre-planting expenses are allowed up to {max_pre_days} days before planting ({min_allowed_dt.strftime('%Y-%m-%d')})."
+
+    # 2. Upper Bound Guard: Max 30 days after harvest (if completed)
+    if actual_harvest_date_str:
+        harvest_dt = datetime.strptime(actual_harvest_date_str.strip(), "%Y-%m-%d")
+        max_allowed_dt = harvest_dt + timedelta(days=max_post_days)
+        if exp_dt > max_allowed_dt:
+            return False, f"Expense date ({expense_date_str}) cannot exceed {max_post_days} days past actual harvest date ({actual_harvest_date_str})."
+
+    return True, "Valid"
 
 # --- 2. Agronomic & Seasonality Calculation Engines ---
 
