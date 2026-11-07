@@ -135,7 +135,7 @@ def _seed_default_catalogs():
         conn.commit()
 
 def _seed_multi_year_records():
-    """Seeds multi-year historical operational records (2024–2026) for testing analytics and pagination."""
+    """Seeds multi-year historical operational records (2024–2026) with 100% synchronized itemized expenses."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM production_records")
@@ -143,19 +143,14 @@ def _seed_multi_year_records():
             return
 
         sample_records = [
-            # 2024 Harvests
-            (1, 1, "2024-06-15", "2024-09-23", "2024-10-13", "2024-10-01", 11200.00, 11800.00, 5.36, 45000.00, "Completed", 1),
-            (3, 3, "2024-03-01", "2024-04-30", "2024-05-20", "2024-05-10", 9400.00, 9100.00, -3.19, 28000.00, "Completed", 1),
-            (4, 3, "2024-11-10", "2025-01-19", "2025-02-08", "2025-01-25", 8500.00, 8900.00, 4.71, 22000.00, "Completed", 1),
-            
-            # 2025 Harvests
-            (1, 4, "2025-06-01", "2025-09-09", "2025-09-29", "2025-09-18", 13500.00, 14100.00, 4.44, 52000.00, "Completed", 1),
-            (2, 2, "2025-03-15", "2025-06-08", "2025-06-28", "2025-06-15", 5800.00, 5400.00, -6.90, 18500.00, "Completed", 1),
-            (10, 5, "2025-11-01", "2025-12-26", "2026-01-10", "2026-01-05", 3800.00, 3950.00, 3.95, 14000.00, "Completed", 1),
-
-            # 2026 Active / Recent Harvests
-            (3, 3, "2026-03-10", "2026-05-09", "2026-05-29", "2026-05-18", 9200.00, 9500.00, 3.26, 26500.00, "Completed", 0),
-            (1, 1, "2026-06-01", "2026-09-09", "2026-09-29", None, 11500.00, 0.0, 0.0, 38000.00, "In Progress", 0)
+            (1, 1, "2024-06-15", "2024-09-23", "2024-10-13", "2024-10-01", 11200.00, 11800.00, 5.36, 0.0, "Completed", 1),
+            (3, 3, "2024-03-01", "2024-04-30", "2024-05-20", "2024-05-10", 9400.00, 9100.00, -3.19, 0.0, "Completed", 1),
+            (4, 3, "2024-11-10", "2025-01-19", "2025-02-08", "2025-01-25", 8500.00, 8900.00, 4.71, 0.0, "Completed", 1),
+            (1, 4, "2025-06-01", "2025-09-09", "2025-09-29", "2025-09-18", 13500.00, 14100.00, 4.44, 0.0, "Completed", 1),
+            (2, 2, "2025-03-15", "2025-06-08", "2025-06-28", "2025-06-15", 5800.00, 5400.00, -6.90, 0.0, "Completed", 1),
+            (10, 5, "2025-11-01", "2025-12-26", "2026-01-10", "2026-01-05", 3800.00, 3950.00, 3.95, 0.0, "Completed", 1),
+            (3, 3, "2026-03-10", "2026-05-09", "2026-05-29", "2026-05-18", 9200.00, 9500.00, 3.26, 0.0, "Completed", 0),
+            (1, 1, "2026-06-01", "2026-09-09", "2026-09-29", None, 11500.00, 0.0, 0.0, 0.0, "In Progress", 0)
         ]
 
         cursor.executemany("""
@@ -166,14 +161,37 @@ def _seed_multi_year_records():
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, sample_records)
 
-        # Seed corresponding itemized expense logs
+        # Seed itemized expenses for EVERY sample record
         sample_expenses = [
-            (1, 'Seeds/Seedlings', 'Certified Inbred Rice Seeds', 12000.00, '2024-06-15'),
-            (1, 'Fertilizer/Soil Inputs', '14-14-14 & Urea Fertilizer Bags', 23000.00, '2024-07-01'),
+            # Record #1
+            (1, 'Seeds/Seedlings', 'Certified Inbred Rice Seeds', 15000.00, '2024-06-15'),
+            (1, 'Fertilizer/Soil Inputs', '14-14-14 & Urea Fertilizer Bags', 20000.00, '2024-07-01'),
             (1, 'Labor/Workforce', 'Transplanting and Harvesting Labor', 10000.00, '2024-10-01'),
+            # Record #2
+            (2, 'Seeds/Seedlings', 'Hybrid Tomato Seeds', 8000.00, '2024-03-01'),
+            (2, 'Fertilizer/Soil Inputs', 'Foliar & Organic Fertilizer', 12000.00, '2024-03-15'),
+            (2, 'Labor/Workforce', 'Pruning and Harvesting Crew', 8000.00, '2024-05-10'),
+            # Record #3
+            (3, 'Seeds/Seedlings', 'Hybrid Cabbage Seedlings', 7000.00, '2024-11-10'),
+            (3, 'Fertilizer/Soil Inputs', 'Soil Nutrients and Compost', 9000.00, '2024-11-20'),
+            (3, 'Labor/Workforce', 'Harvesting & Field Labor', 6000.00, '2025-01-25'),
+            # Record #4
+            (4, 'Seeds/Seedlings', 'Lowland Rice Palay Seeds', 17000.00, '2025-06-01'),
+            (4, 'Fertilizer/Soil Inputs', 'Bulk Urea & Phosphate', 22000.00, '2025-06-20'),
+            (4, 'Fuel/Irrigation/Utilities', 'Water Pump Fuel & Irrigation', 13000.00, '2025-08-10'),
+            # Record #5
+            (5, 'Seeds/Seedlings', 'Yellow Corn Hybrid Seeds', 6500.00, '2025-03-15'),
+            (5, 'Fertilizer/Soil Inputs', 'Nitrogen-Rich Fertilizer', 7500.00, '2025-04-01'),
+            (5, 'Labor/Workforce', 'Land Preparation & Weeding', 4500.00, '2025-05-10'),
+            # Record #6
+            (6, 'Seeds/Seedlings', 'High-Yield Mungbean Seeds', 4000.00, '2025-11-01'),
+            (6, 'Fertilizer/Soil Inputs', 'Bio-Fertilizer Inoculant', 5000.00, '2025-11-15'),
+            (6, 'Labor/Workforce', 'Pod Harvesting & Threshing', 5000.00, '2026-01-05'),
+            # Record #7
             (7, 'Seeds/Seedlings', 'Hybrid Tomato Seedlings', 8500.00, '2026-03-10'),
             (7, 'Fertilizer/Soil Inputs', 'Foliar & Organic Composting', 10000.00, '2026-03-20'),
             (7, 'Labor/Workforce', 'Pruning & Harvesting Crews', 8000.00, '2026-05-18'),
+            # Record #8
             (8, 'Seeds/Seedlings', 'Palay Seeds (Submariner Variety)', 13000.00, '2026-06-01'),
             (8, 'Fuel/Irrigation/Utilities', 'Irrigation Pump Diesel Fuel', 25000.00, '2026-06-15')
         ]
@@ -183,8 +201,18 @@ def _seed_multi_year_records():
             VALUES (?, ?, ?, ?, ?)
         """, sample_expenses)
 
-        conn.commit()
+        # Synchronize total_expenses_php for all records from actual itemized sums
+        cursor.execute("""
+            UPDATE production_records
+            SET total_expenses_php = (
+                SELECT COALESCE(SUM(amount_php), 0.0)
+                FROM production_expenses
+                WHERE production_expenses.record_id = production_records.record_id
+            );
+        """)
 
+        conn.commit()
+        
 # --- SQLite Query Helpers (Strict ASC Ordering Enforced) ---
 
 def fetch_all_crops() -> List[Dict[str, Any]]:
