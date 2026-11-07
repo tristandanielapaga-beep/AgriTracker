@@ -261,64 +261,178 @@ def log_harvest_workflow():
     input("\nPress Enter to return to main menu...")
 
 
-def add_expense_workflow():
-    """Interactive workflow for logging an itemized production expense."""
+def manage_expenses_workflow():
+    """Interactive console for viewing, adding, editing, and deleting itemized expenses."""
     clear_screen()
-    print_header("Log Itemized Production Expense")
+    print_header("Manage Itemized Production Expenses")
 
     all_records = db.fetch_joined_records()
+    records_dict = {r['record_id']: r for r in all_records}
+
     if not all_records:
         print("[!] No production records available.")
         input("Press Enter to return...")
         return
 
+    print("PRODUCTION RECORDS:")
     for r in all_records:
-        print(f"  [{r['record_id']}] {r['crop_name']} at {r['location_name']} ({r['status']})")
+        print(f"  [{r['record_id']}] {r['crop_name']} at {r['location_name']} (Total Expenses: ₱{r['total_expenses_php']:,.2f})")
 
     try:
-        rec_id = int(input("\nSelect Record ID to attach expense: ").strip())
+        rec_id = int(input("\nSelect Record ID to manage expenses: ").strip())
     except ValueError:
         print("[!] Invalid Record ID.")
         input("Press Enter to return...")
         return
 
-    categories = [
-        'Seeds/Seedlings', 'Fertilizer/Soil Inputs', 'Pesticides/Crop Protection',
-        'Labor/Workforce', 'Fuel/Irrigation/Utilities', 'Equipment/Maintenance', 'Other'
-    ]
-
-    print("\nEXPENSE CATEGORIES:")
-    for idx, cat in enumerate(categories, 1):
-        print(f"  [{idx}] {cat}")
-
-    try:
-        cat_idx = int(input("Select Category ID: ").strip()) - 1
-        selected_cat = categories[cat_idx]
-    except (ValueError, IndexError):
-        print("[!] Invalid Category selection.")
+    if rec_id not in records_dict:
+        print(f"[!] Record ID #{rec_id} not found.")
         input("Press Enter to return...")
         return
 
-    desc = input("Enter Description / Line Item Details: ").strip()
-    amount_str = input("Enter Amount in PHP (₱): ").strip()
-    date_str = input("Enter Expense Date (YYYY-MM-DD): ").strip()
+    while True:
+        clear_screen()
+        target_rec = {r['record_id']: r for r in db.fetch_joined_records()}[rec_id]
+        expenses = db.fetch_expenses_by_record(rec_id)
 
-    if not fn.validate_positive_number(amount_str) or not fn.validate_date_format(date_str):
-        print("[!] Invalid amount or date format.")
-        input("Press Enter to return...")
-        return
+        print_header(f"Expense Log Manager for Record #{rec_id} ({target_rec['crop_name']})")
+        print(f" Farm Location: {target_rec['location_name']} | Planting Date: {target_rec['planting_date']}")
+        print(f" Current Total Expenses: ₱{target_rec['total_expenses_php']:,.2f}\n")
+        print("ITEMIZED EXPENSES:")
+        print(f" {'ID':<4} | {'Date':<10} | {'Category':<25} | {'Amount (₱)':<12} | {'Description'}")
+        print("-" * 75)
 
-    db.add_itemized_expense(
-        record_id=rec_id,
-        category=selected_cat,
-        description=desc,
-        amount_php=float(amount_str),
-        date_logged=date_str
-    )
+        if not expenses:
+            print("  (No itemized expenses logged for this record)")
+        else:
+            for e in expenses:
+                print(f" [{e['expense_id']:<2}] | {e['date_logged']} | {e['expense_category']:<25} | ₱{e['amount_php']:<11,.2f} | {e['description']}")
+        print("-" * 75)
 
-    print(f"\n[+] SUCCESS: Expense of ₱{float(amount_str):,.2f} logged for Record #{rec_id}.")
-    input("\nPress Enter to return to main menu...")
+        print("\nOptions: [A]dd Expense | [E]dit Expense | [D]elete Expense | [B]ack to Main Menu")
+        choice = input("Select an option: ").strip().lower()
 
+        categories = [
+            'Seeds/Seedlings', 'Fertilizer/Soil Inputs', 'Pesticides/Crop Protection',
+            'Labor/Workforce', 'Fuel/Irrigation/Utilities', 'Equipment/Maintenance', 'Other'
+        ]
+
+        if choice == 'a':
+            print("\n--- ADD NEW EXPENSE ITEM ---")
+            print("EXPENSE CATEGORIES:")
+            for idx, cat in enumerate(categories, 1):
+                print(f"  [{idx}] {cat}")
+            try:
+                cat_idx = int(input("Select Category ID: ").strip()) - 1
+                selected_cat = categories[cat_idx]
+            except (ValueError, IndexError):
+                print("[!] Invalid Category selection.")
+                input("Press Enter to continue...")
+                continue
+
+            desc = input("Enter Description: ").strip()
+            amount_str = input("Enter Amount in PHP (₱): ").strip()
+            date_str = input("Enter Expense Date (YYYY-MM-DD): ").strip()
+
+            if not fn.validate_positive_number(amount_str):
+                print("[!] Invalid amount. Must be positive.")
+                input("Press Enter to continue...")
+                continue
+
+            is_valid_date, date_err = fn.validate_expense_date(
+                expense_date_str=date_str,
+                planting_date_str=target_rec['planting_date'],
+                actual_harvest_date_str=target_rec['actual_harvest_date']
+            )
+            if not is_valid_date:
+                print(f"\n[!] DATE ERROR: {date_err}")
+                input("Press Enter to continue...")
+                continue
+
+            db.add_itemized_expense(rec_id, selected_cat, desc, float(amount_str), date_str)
+            print("[+] Expense line item added successfully!")
+            input("Press Enter to continue...")
+
+        elif choice == 'e':
+            if not expenses:
+                print("[!] No expenses to edit.")
+                input("Press Enter to continue...")
+                continue
+            try:
+                exp_id = int(input("\nEnter Expense Line Item ID to Edit: ").strip())
+            except ValueError:
+                print("[!] Invalid Expense ID.")
+                input("Press Enter to continue...")
+                continue
+
+            exp_dict = {e['expense_id']: e for e in expenses}
+            if exp_id not in exp_dict:
+                print(f"[!] Expense ID #{exp_id} not found.")
+                input("Press Enter to continue...")
+                continue
+
+            target_exp = exp_dict[exp_id]
+            print(f"\nEditing Expense #{exp_id} ({target_exp['description']}):")
+            print("EXPENSE CATEGORIES:")
+            for idx, cat in enumerate(categories, 1):
+                print(f"  [{idx}] {cat}")
+            try:
+                cat_idx = int(input(f"Select Category ID [Current: {target_exp['expense_category']}]: ").strip()) - 1
+                selected_cat = categories[cat_idx]
+            except (ValueError, IndexError):
+                print("[!] Invalid Category selection.")
+                input("Press Enter to continue...")
+                continue
+
+            desc = input(f"Enter Description [Current: '{target_exp['description']}']: ").strip() or target_exp['description']
+            amount_str = input(f"Enter Amount in PHP [Current: ₱{target_exp['amount_php']:,.2f}]: ").strip()
+            amount = float(amount_str) if amount_str and fn.validate_positive_number(amount_str) else target_exp['amount_php']
+            
+            date_str = input(f"Enter Date [Current: {target_exp['date_logged']}]: ").strip() or target_exp['date_logged']
+
+            is_valid_date, date_err = fn.validate_expense_date(
+                expense_date_str=date_str,
+                planting_date_str=target_rec['planting_date'],
+                actual_harvest_date_str=target_rec['actual_harvest_date']
+            )
+            if not is_valid_date:
+                print(f"\n[!] DATE ERROR: {date_err}")
+                input("Press Enter to continue...")
+                continue
+
+            db.update_itemized_expense(exp_id, selected_cat, desc, amount, date_str)
+            print(f"[+] Expense #{exp_id} updated successfully!")
+            input("Press Enter to continue...")
+
+        elif choice == 'd':
+            if not expenses:
+                print("[!] No expenses to delete.")
+                input("Press Enter to continue...")
+                continue
+            try:
+                exp_id = int(input("\nEnter Expense Line Item ID to Delete: ").strip())
+            except ValueError:
+                print("[!] Invalid Expense ID.")
+                input("Press Enter to continue...")
+                continue
+
+            exp_dict = {e['expense_id']: e for e in expenses}
+            if exp_id not in exp_dict:
+                print(f"[!] Expense ID #{exp_id} not found.")
+                input("Press Enter to continue...")
+                continue
+
+            target_exp = exp_dict[exp_id]
+            confirm = input(f"Are you sure you want to delete expense '{target_exp['description']}' (₱{target_exp['amount_php']:,.2f})? (y/n): ").strip().lower()
+            if confirm == 'y':
+                db.delete_itemized_expense(exp_id)
+                print(f"[+] Expense #{exp_id} deleted successfully.")
+            else:
+                print("[*] Deletion cancelled.")
+            input("Press Enter to continue...")
+
+        elif choice == 'b':
+            break
 
 def delete_record_workflow():
     """Deletes a record with strict confirmation guard."""
@@ -482,7 +596,7 @@ def main():
         print("  [2] Search / Filter Production Records")
         print("  [3] Log New Planting Operation (With ML Yield Prediction)")
         print("  [4] Log Harvest Output (Complete Active Record)")
-        print("  [5] Log Itemized Production Expense")
+        print("  [5] Manage Production Expenses")
         print("  [6] Register New Crop Variety")
         print("  [7] Register New Farm Location Plot")
         print("  [8] Delete Production Record")
@@ -501,7 +615,7 @@ def main():
         elif choice == '4':
             log_harvest_workflow()
         elif choice == '5':
-            add_expense_workflow()
+            manage_expenses_workflow()
         elif choice == '6':
             register_crop_workflow()
         elif choice == '7':
