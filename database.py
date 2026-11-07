@@ -281,3 +281,66 @@ def add_itemized_expense(record_id: int, category: str, description: str, amount
         """, (record_id, record_id))
 
         conn.commit()
+        
+def update_itemized_expense(expense_id: int, category: str, description: str, amount_php: float, date_logged: str) -> Optional[int]:
+    """
+    Updates an itemized expense line item and automatically recalculates 
+    the parent record's total_expenses_php. Returns the parent record_id.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT record_id FROM production_expenses WHERE expense_id = ?;", (expense_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        record_id = row["record_id"]
+
+        cursor.execute("""
+            UPDATE production_expenses
+            SET expense_category = ?, description = ?, amount_php = ?, date_logged = ?
+            WHERE expense_id = ?;
+        """, (category, description, amount_php, date_logged, expense_id))
+
+        # Automatically recalculate parent record total expenses
+        cursor.execute("""
+            UPDATE production_records
+            SET total_expenses_php = (
+                SELECT COALESCE(SUM(amount_php), 0.0)
+                FROM production_expenses
+                WHERE record_id = ?
+            )
+            WHERE record_id = ?;
+        """, (record_id, record_id))
+
+        conn.commit()
+        return record_id
+
+
+def delete_itemized_expense(expense_id: int) -> Optional[int]:
+    """
+    Deletes an itemized expense line item and automatically recalculates 
+    the parent record's total_expenses_php. Returns the parent record_id.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT record_id FROM production_expenses WHERE expense_id = ?;", (expense_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        record_id = row["record_id"]
+
+        cursor.execute("DELETE FROM production_expenses WHERE expense_id = ?;", (expense_id,))
+
+        # Automatically recalculate parent record total expenses
+        cursor.execute("""
+            UPDATE production_records
+            SET total_expenses_php = (
+                SELECT COALESCE(SUM(amount_php), 0.0)
+                FROM production_expenses
+                WHERE record_id = ?
+            )
+            WHERE record_id = ?;
+        """, (record_id, record_id))
+
+        conn.commit()
+        return record_id
