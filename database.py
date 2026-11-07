@@ -129,7 +129,7 @@ def fetch_joined_records():
             p.production_cost
         FROM production_records p
         JOIN crops c ON p.crop_id = c.crop_id
-        ORDER BY p.record_id DESC;
+        ORDER BY p.record_id;
     """
     cursor.execute(query)
     rows = cursor.fetchall()
@@ -174,7 +174,7 @@ def search_records(keyword):
         FROM production_records p
         JOIN crops c ON p.crop_id = c.crop_id
         WHERE c.crop_name LIKE ? OR c.category LIKE ? OR p.farm_location LIKE ?
-        ORDER BY p.record_id DESC;
+        ORDER BY p.record_id;
     """
     pattern = f"%{keyword}%"
     cursor.execute(query, (pattern, pattern, pattern))
