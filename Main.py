@@ -227,7 +227,7 @@ def inspect_record_details(record_id: int):
 
 
 def search_records_workflow():
-    """Filters records by Year, Category, or Keyword."""
+    """Interactive paginated search and filter workflow for production records."""
     clear_screen()
     print_header("Search & Filter Production Records")
 
@@ -253,12 +253,47 @@ def search_records_workflow():
         return
     else:
         print("\n[!] Invalid selection.")
-        input("Press Enter to continue...")
+        input("Press Enter...")
         return
 
-    pagination = fn.paginate_records(filtered, page=1, page_size=20)
-    render_ledger_table(pagination["items"], 1, 1, pagination["total_records"])
-    input("\nPress Enter to return to main menu...")
+    # Clean paginated loop for the pre-filtered results subset
+    current_page = 1
+    page_size = 10
+
+    while True:
+        clear_screen()
+        pagination = fn.paginate_records(filtered, page=current_page, page_size=page_size)
+
+        render_ledger_table(
+            items=pagination["items"],
+            current_page=pagination["current_page"],
+            total_pages=pagination["total_pages"],
+            total_records=pagination["total_records"]
+        )
+
+        print("\nNavigation: [N]ext | [P]rev | [J]ump Page | [I]nspect Record | [B]ack to Search Menu")
+        sub_choice = input("Select option: ").strip().lower()
+
+        if sub_choice == 'n':
+            if current_page < pagination["total_pages"]:
+                current_page += 1
+        elif sub_choice == 'p':
+            if current_page > 1:
+                current_page -= 1
+        elif sub_choice == 'j':
+            try:
+                target_p = int(input(f"Enter Page Number (1-{pagination['total_pages']}): ").strip())
+                if 1 <= target_p <= pagination["total_pages"]:
+                    current_page = target_p
+            except ValueError:
+                pass
+        elif sub_choice == 'i':
+            rec_id_str = input("\nEnter Record ID to inspect: ").strip()
+            if rec_id_str.isdigit():
+                inspect_record_details(int(rec_id_str))
+                input("\nPress Enter to return...")
+        elif sub_choice == 'b':
+            break
 
 
 def log_planting_workflow():
