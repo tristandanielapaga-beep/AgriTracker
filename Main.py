@@ -52,13 +52,30 @@ def render_ledger_table(items: List[Dict[str, Any]], current_page: int, total_pa
 
 
 def view_ledger_workflow():
-    """Interactive paginated ledger viewer workflow."""
+    """Interactive paginated ledger with Jump-to-Page, Dynamic Sorting, and Direct Search."""
     current_page = 1
     page_size = 10
+    current_sort_field = "record_id"
+    current_sort_dir = "ASC"
+    search_keyword = ""
 
     while True:
         clear_screen()
-        all_records = db.fetch_joined_records()
+        # Fetch records sorted by active sort field
+        all_records = db.fetch_joined_records(order_by=current_sort_field, order_dir=current_sort_dir)
+        
+        # Apply active inline search filter
+        if search_keyword:
+            kw = search_keyword.lower()
+            all_records = [
+                r for r in all_records
+                if kw in str(r['record_id'])
+                or kw in r['crop_name'].lower()
+                or kw in r['location_name'].lower()
+                or kw in r['status'].lower()
+                or kw in r['planting_date']
+            ]
+
         pagination = fn.paginate_records(all_records, page=current_page, page_size=page_size)
 
         render_ledger_table(
@@ -68,8 +85,11 @@ def view_ledger_workflow():
             total_records=pagination["total_records"]
         )
 
-        print("\nNavigation: [N]ext Page | [P]revious Page | [I]nspect Record Details | [B]ack to Main Menu")
-        choice = input("Select an option: ").strip().lower()
+        filter_status_str = f" [Filter: '{search_keyword}']" if search_keyword else ""
+        sort_status_str = f" [Sorted by: {current_sort_field} {current_sort_dir}]"
+        print(f"Active Controls:{sort_status_str}{filter_status_str}")
+        print("\nNavigation: [N]ext | [P]rev | [J]ump Page | [S]ort Field | [F]ilter / Search | [I]nspect | [B]ack")
+        choice = input("Select option: ").strip().lower()
 
         if choice == 'n':
             if current_page < pagination["total_pages"]:
@@ -77,6 +97,30 @@ def view_ledger_workflow():
         elif choice == 'p':
             if current_page > 1:
                 current_page -= 1
+        elif choice == 'j':
+            try:
+                target_p = int(input(f"Enter Page Number (1-{pagination['total_pages']}): ").strip())
+                if 1 <= target_p <= pagination["total_pages"]:
+                    current_page = target_p
+                else:
+                    print("[!] Out of bounds page number.")
+                    input("Press Enter...")
+            except ValueError:
+                print("[!] Invalid input.")
+                input("Press Enter...")
+        elif choice == 's':
+            print("\nSORT FIELDS: [1] Record ID | [2] Planting Date | [3] Crop Name | [4] Location | [5] Expenses")
+            s_choice = input("Select sort field (1-5): ").strip()
+            field_map = {'1': 'record_id', '2': 'planting_date', '3': 'crop_name', '4': 'location_name', '5': 'total_expenses_php'}
+            if s_choice in field_map:
+                current_sort_field = field_map[s_choice]
+                d_choice = input("Direction: [1] Ascending (ASC) | [2] Descending (DESC): ").strip()
+                current_sort_dir = "DESC" if d_choice == '2' else "ASC"
+                current_page = 1
+        elif choice == 'f':
+            kw_input = input("\nEnter search keyword (or press Enter to clear filter): ").strip()
+            search_keyword = kw_input
+            current_page = 1
         elif choice == 'i':
             rec_id_str = input("\nEnter Record ID to inspect: ").strip()
             if rec_id_str.isdigit():

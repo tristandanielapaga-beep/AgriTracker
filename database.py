@@ -1,5 +1,7 @@
 import os
 import sqlite3
+import random
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 
 DB_PATH = os.path.join("database", "agricultural_tracker.db")
@@ -135,73 +137,111 @@ def _seed_default_catalogs():
         conn.commit()
 
 def _seed_multi_year_records():
-    """Seeds multi-year historical operational records (2024–2026) with 100% synchronized itemized expenses."""
+    """Populates 500 synthetic historical production records with synchronized itemized expenses."""
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM production_records")
+        cursor.execute("SELECT COUNT(*) FROM production_records;")
         if cursor.fetchone()[0] > 0:
             return
 
-        sample_records = [
-            (1, 1, "2024-06-15", "2024-09-23", "2024-10-13", "2024-10-01", 11200.00, 11800.00, 5.36, 0.0, "Completed", 1),
-            (3, 3, "2024-03-01", "2024-04-30", "2024-05-20", "2024-05-10", 9400.00, 9100.00, -3.19, 0.0, "Completed", 1),
-            (4, 3, "2024-11-10", "2025-01-19", "2025-02-08", "2025-01-25", 8500.00, 8900.00, 4.71, 0.0, "Completed", 1),
-            (1, 4, "2025-06-01", "2025-09-09", "2025-09-29", "2025-09-18", 13500.00, 14100.00, 4.44, 0.0, "Completed", 1),
-            (2, 2, "2025-03-15", "2025-06-08", "2025-06-28", "2025-06-15", 5800.00, 5400.00, -6.90, 0.0, "Completed", 1),
-            (10, 5, "2025-11-01", "2025-12-26", "2026-01-10", "2026-01-05", 3800.00, 3950.00, 3.95, 0.0, "Completed", 1),
-            (3, 3, "2026-03-10", "2026-05-09", "2026-05-29", "2026-05-18", 9200.00, 9500.00, 3.26, 0.0, "Completed", 0),
-            (1, 1, "2026-06-01", "2026-09-09", "2026-09-29", None, 11500.00, 0.0, 0.0, 0.0, "In Progress", 0)
-        ]
+        # Fetch catalog mappings
+        cursor.execute("SELECT crop_id, min_growth_days, max_growth_days FROM crops;")
+        crops = [dict(r) for r in cursor.fetchall()]
+
+        cursor.execute("SELECT location_id, area_hectares FROM locations;")
+        locations = [dict(r) for r in cursor.fetchall()]
+
+        records_to_insert = []
+        expenses_to_insert = []
+
+        # Generate 500 synthetic operations across 2024, 2025, and 2026
+        base_date = datetime(2024, 1, 1)
+
+        for i in range(1, 501):
+            crop = random.choice(crops)
+            loc = random.choice(locations)
+
+            # Random planting date between Jan 2024 and Aug 2026
+            days_offset = random.randint(0, 950)
+            plant_dt = base_date + timedelta(days=days_offset)
+            plant_str = plant_dt.strftime("%Y-%m-%d")
+
+            # Harvest targets
+            min_days = crop["min_growth_days"]
+            max_days = crop["max_growth_days"]
+            target_min_dt = plant_dt + timedelta(days=min_days)
+            target_max_dt = plant_dt + timedelta(days=max_days)
+
+            # 90% completed, 10% in-progress
+            is_completed = random.random() < 0.90
+            status = "Completed" if is_completed else "In Progress"
+
+            # Yield dynamics
+            predicted_kg = round(loc["area_hectares"] * random.uniform(3500.0, 6500.0), 2)
+            
+            if is_completed:
+                actual_harvest_dt = plant_dt + timedelta(days=random.randint(min_days - 5, max_days + 5))
+                actual_harvest_str = actual_harvest_dt.strftime("%Y-%m-%d")
+                variance_mult = random.uniform(0.88, 1.12)
+                actual_kg = round(predicted_kg * variance_mult, 2)
+                variance_pct = round(((actual_kg - predicted_kg) / predicted_kg) * 100.0, 2)
+            else:
+                actual_harvest_str = None
+                actual_kg = 0.0
+                variance_pct = 0.0
+
+            records_to_insert.append((
+                crop["crop_id"],
+                loc["location_id"],
+                plant_str,
+                target_min_dt.strftime("%Y-%m-%d"),
+                target_max_dt.strftime("%Y-%m-%d"),
+                actual_harvest_str,
+                predicted_kg,
+                actual_kg,
+                variance_pct,
+                0.0,  # Will be auto-summed from child expenses
+                status,
+                1
+            ))
 
         cursor.executemany("""
             INSERT INTO production_records (
                 crop_id, location_id, planting_date, target_min_harvest_date, target_max_harvest_date,
                 actual_harvest_date, predicted_yield_kg, actual_yield_kg, yield_variance_pct,
                 total_expenses_php, status, is_historical
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, sample_records)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """, records_to_insert)
 
-        # Seed itemized expenses for EVERY sample record
-        sample_expenses = [
-            # Record #1
-            (1, 'Seeds/Seedlings', 'Certified Inbred Rice Seeds', 15000.00, '2024-06-15'),
-            (1, 'Fertilizer/Soil Inputs', '14-14-14 & Urea Fertilizer Bags', 20000.00, '2024-07-01'),
-            (1, 'Labor/Workforce', 'Transplanting and Harvesting Labor', 10000.00, '2024-10-01'),
-            # Record #2
-            (2, 'Seeds/Seedlings', 'Hybrid Tomato Seeds', 8000.00, '2024-03-01'),
-            (2, 'Fertilizer/Soil Inputs', 'Foliar & Organic Fertilizer', 12000.00, '2024-03-15'),
-            (2, 'Labor/Workforce', 'Pruning and Harvesting Crew', 8000.00, '2024-05-10'),
-            # Record #3
-            (3, 'Seeds/Seedlings', 'Hybrid Cabbage Seedlings', 7000.00, '2024-11-10'),
-            (3, 'Fertilizer/Soil Inputs', 'Soil Nutrients and Compost', 9000.00, '2024-11-20'),
-            (3, 'Labor/Workforce', 'Harvesting & Field Labor', 6000.00, '2025-01-25'),
-            # Record #4
-            (4, 'Seeds/Seedlings', 'Lowland Rice Palay Seeds', 17000.00, '2025-06-01'),
-            (4, 'Fertilizer/Soil Inputs', 'Bulk Urea & Phosphate', 22000.00, '2025-06-20'),
-            (4, 'Fuel/Irrigation/Utilities', 'Water Pump Fuel & Irrigation', 13000.00, '2025-08-10'),
-            # Record #5
-            (5, 'Seeds/Seedlings', 'Yellow Corn Hybrid Seeds', 6500.00, '2025-03-15'),
-            (5, 'Fertilizer/Soil Inputs', 'Nitrogen-Rich Fertilizer', 7500.00, '2025-04-01'),
-            (5, 'Labor/Workforce', 'Land Preparation & Weeding', 4500.00, '2025-05-10'),
-            # Record #6
-            (6, 'Seeds/Seedlings', 'High-Yield Mungbean Seeds', 4000.00, '2025-11-01'),
-            (6, 'Fertilizer/Soil Inputs', 'Bio-Fertilizer Inoculant', 5000.00, '2025-11-15'),
-            (6, 'Labor/Workforce', 'Pod Harvesting & Threshing', 5000.00, '2026-01-05'),
-            # Record #7
-            (7, 'Seeds/Seedlings', 'Hybrid Tomato Seedlings', 8500.00, '2026-03-10'),
-            (7, 'Fertilizer/Soil Inputs', 'Foliar & Organic Composting', 10000.00, '2026-03-20'),
-            (7, 'Labor/Workforce', 'Pruning & Harvesting Crews', 8000.00, '2026-05-18'),
-            # Record #8
-            (8, 'Seeds/Seedlings', 'Palay Seeds (Submariner Variety)', 13000.00, '2026-06-01'),
-            (8, 'Fuel/Irrigation/Utilities', 'Irrigation Pump Diesel Fuel', 25000.00, '2026-06-15')
+        # Generate matching itemized line-item receipts for all 500 records
+        expense_categories = [
+            ('Seeds/Seedlings', 'High-Yield Certified Seeds Batch', 6000.0, 18000.0),
+            ('Fertilizer/Soil Inputs', 'Soil Nutrients and Compost Blend', 8000.0, 25000.0),
+            ('Labor/Workforce', 'Land Preparation & Harvest Labor', 5000.0, 15000.0),
+            ('Fuel/Irrigation/Utilities', 'Irrigation Pump Diesel', 3000.0, 10000.0)
         ]
+
+        for rec_id in range(1, 501):
+            # Select 2 to 3 random expense entries per record
+            num_receipts = random.randint(2, 3)
+            chosen_cats = random.sample(expense_categories, num_receipts)
+            
+            for cat_name, desc, min_amt, max_amt in chosen_cats:
+                amt = round(random.uniform(min_amt, max_amt), 2)
+                expenses_to_insert.append((
+                    rec_id,
+                    cat_name,
+                    desc,
+                    amt,
+                    records_to_insert[rec_id - 1][2]  # Log date = planting date
+                ))
 
         cursor.executemany("""
             INSERT INTO production_expenses (record_id, expense_category, description, amount_php, date_logged)
-            VALUES (?, ?, ?, ?, ?)
-        """, sample_expenses)
+            VALUES (?, ?, ?, ?, ?);
+        """, expenses_to_insert)
 
-        # Synchronize total_expenses_php for all records from actual itemized sums
+        # Synchronize total cumulative expenses across all parent records
         cursor.execute("""
             UPDATE production_records
             SET total_expenses_php = (
@@ -229,14 +269,27 @@ def fetch_all_locations() -> List[Dict[str, Any]]:
         cursor.execute("SELECT * FROM locations ORDER BY location_id ASC;")
         return [dict(row) for row in cursor.fetchall()]
 
-def fetch_joined_records(limit: Optional[int] = None, offset: Optional[int] = None) -> List[Dict[str, Any]]:
+def fetch_joined_records(order_by: str = "record_id", order_dir: str = "ASC") -> List[Dict[str, Any]]:
     """
-    Retrieves operational production records joined with crop and location metadata,
-    ordered by record_id ASC. Supports terminal table pagination.
+    Retrieves production records joined with crop and location metadata.
+    Supports dynamic field sorting (default: record_id ASC).
     """
-    query = """
+    allowed_sort_fields = {
+        "record_id": "p.record_id",
+        "crop_name": "c.crop_name",
+        "location_name": "l.location_name",
+        "planting_date": "p.planting_date",
+        "actual_yield_kg": "p.actual_yield_kg",
+        "total_expenses_php": "p.total_expenses_php",
+        "status": "p.status"
+    }
+
+    sort_column = allowed_sort_fields.get(order_by, "p.record_id")
+    sort_direction = "DESC" if order_dir.upper() == "DESC" else "ASC"
+
+    query = f"""
         SELECT 
-            pr.record_id,
+            p.record_id,
             c.crop_id,
             c.crop_name,
             c.category,
@@ -247,28 +300,26 @@ def fetch_joined_records(limit: Optional[int] = None, offset: Optional[int] = No
             l.location_name,
             l.field_type,
             l.area_hectares,
-            pr.planting_date,
-            pr.target_min_harvest_date,
-            pr.target_max_harvest_date,
-            pr.actual_harvest_date,
-            pr.predicted_yield_kg,
-            pr.actual_yield_kg,
-            pr.yield_variance_pct,
-            pr.total_expenses_php,
-            pr.status,
-            pr.is_historical
-        FROM production_records pr
-        JOIN crops c ON pr.crop_id = c.crop_id
-        JOIN locations l ON pr.location_id = l.location_id
-        ORDER BY pr.record_id ASC
+            p.planting_date,
+            p.target_min_harvest_date,
+            p.target_max_harvest_date,
+            p.actual_harvest_date,
+            p.predicted_yield_kg,
+            p.actual_yield_kg,
+            p.yield_variance_pct,
+            p.total_expenses_php,
+            p.status,
+            p.is_historical
+        FROM production_records p
+        JOIN crops c ON p.crop_id = c.crop_id
+        JOIN locations l ON p.location_id = l.location_id
+        ORDER BY {sort_column} {sort_direction};
     """
-    if limit is not None and offset is not None:
-        query += f" LIMIT {int(limit)} OFFSET {int(offset)}"
-
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(query)
-        return [dict(row) for row in cursor.fetchall()]
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
 
 def count_production_records() -> int:
     """Returns total count of production records for pagination math."""
