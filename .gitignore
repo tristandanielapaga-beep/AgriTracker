@@ -20,3 +20,6 @@ env/
 
 # Generated Output Assets
 charts/*.png
+
+#modeling
+data/

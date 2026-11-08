@@ -139,7 +139,7 @@ def _seed_default_catalogs():
         conn.commit()
 
 def _seed_multi_year_records():
-    """Populates 500 synthetic records grouped chronologically by year (2024-2026) with live ML predictions."""
+    """Populates 500 synthetic records grouped chronologically by year blocks (2024, 2025, 2026) with live ML predictions."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM production_records;")
@@ -156,85 +156,94 @@ def _seed_multi_year_records():
         expenses_to_insert = []
         present_date = datetime.now()
 
-        # Allocate 500 records across 2024, 2025, and 2026 buckets
-        year_distribution = [2024] * 150 + [2025] * 200 + [2026] * 150
-        random.shuffle(year_distribution)
+        # Define year blocks and counts to ensure natural chronological progression by record_id ASC
+        year_blocks = [
+            (2024, 150),  # 150 records for 2024
+            (2025, 200),  # 200 records for 2025
+            (2026, 150)   # 150 records for 2026 (includes recent/active crops)
+        ]
 
-        for i, target_year in enumerate(year_distribution, start=1):
-            crop = random.choice(crops)
-            loc = random.choice(locations)
+        for target_year, count in year_blocks:
+            year_records = []
+            for i in range(count):
+                crop = random.choice(crops)
+                loc = random.choice(locations)
 
-            min_days = crop["min_growth_days"]
-            max_days = crop["max_growth_days"]
+                min_days = crop["min_growth_days"]
+                max_days = crop["max_growth_days"]
 
-            # Determine if historical (past) or active (recent 2026)
-            if target_year < present_date.year or (target_year == present_date.year and i % 5 != 0):
-                status = "Completed"
-                # Random day within the target calendar year
-                start_of_year = datetime(target_year, 1, 1)
-                end_of_year = min(datetime(target_year, 12, 31), present_date - timedelta(days=30))
-                if start_of_year >= end_of_year:
+                # Determine status based on year
+                if target_year < present_date.year or (target_year == present_date.year and i >= 30):
+                    status = "Completed"
+                    # Generate random day within the specific calendar year
                     start_of_year = datetime(target_year, 1, 1)
-                    end_of_year = datetime(target_year, 6, 30)
-                
-                delta_days = (end_of_year - start_of_year).days
-                plant_dt = start_of_year + timedelta(days=random.randint(0, max(0, delta_days)))
-                
-                target_min_dt = plant_dt + timedelta(days=min_days)
-                target_max_dt = plant_dt + timedelta(days=max_days)
-                
-                actual_harvest_dt = plant_dt + timedelta(days=random.randint(min_days, max_days))
-                actual_harvest_str = actual_harvest_dt.strftime("%Y-%m-%d")
-            else:
-                status = "In Progress"
-                # Recent planting anchored relative to present_date
-                plant_dt = present_date - timedelta(days=random.randint(10, 30))
-                target_min_dt = plant_dt + timedelta(days=min_days)
-                target_max_dt = plant_dt + timedelta(days=max_days)
-                actual_harvest_str = None
+                    end_of_year = min(datetime(target_year, 12, 31), present_date - timedelta(days=30))
+                    if start_of_year >= end_of_year:
+                        start_of_year = datetime(target_year, 1, 1)
+                        end_of_year = datetime(target_year, 6, 30)
+                    
+                    delta_days = (end_of_year - start_of_year).days
+                    plant_dt = start_of_year + timedelta(days=random.randint(0, max(0, delta_days)))
+                    
+                    target_min_dt = plant_dt + timedelta(days=min_days)
+                    target_max_dt = plant_dt + timedelta(days=max_days)
+                    
+                    actual_harvest_dt = plant_dt + timedelta(days=random.randint(min_days, max_days))
+                    actual_harvest_str = actual_harvest_dt.strftime("%Y-%m-%d")
+                else:
+                    status = "In Progress"
+                    # Recent planting anchored relative to present_date for 2026 active items
+                    plant_dt = present_date - timedelta(days=random.randint(10, 30))
+                    target_min_dt = plant_dt + timedelta(days=min_days)
+                    target_max_dt = plant_dt + timedelta(days=max_days)
+                    actual_harvest_str = None
 
-            plant_str = plant_dt.strftime("%Y-%m-%d")
-            planting_month = plant_dt.month
+                plant_str = plant_dt.strftime("%Y-%m-%d")
+                planting_month = plant_dt.month
 
-            # Calculate PAGASA climate sub-season overlap ratio
-            overlap_ratio = generate_synthetic_data.calculate_season_overlap_ratio(
-                planting_month, min_days, crop["preferred_sub_season"]
-            )
-            budget_per_ha = round(random.uniform(20000.0, 50000.0), 2)
+                # Calculate PAGASA climate sub-season overlap ratio
+                overlap_ratio = generate_synthetic_data.calculate_season_overlap_ratio(
+                    planting_month, min_days, crop["preferred_sub_season"]
+                )
+                budget_per_ha = round(random.uniform(20000.0, 50000.0), 2)
 
-            # LIVE ML PREDICTION CALL
-            predicted_kg = ml_model.predict_crop_yield(
-                category=crop["category"],
-                min_days=min_days,
-                max_days=max_days,
-                area_ha=loc["area_hectares"],
-                budget_per_ha=budget_per_ha,
-                field_type=loc["field_type"],
-                planting_month=planting_month,
-                season_overlap_ratio=overlap_ratio
-            )
+                # LIVE ML PREDICTION CALL
+                predicted_kg = ml_model.predict_crop_yield(
+                    category=crop["category"],
+                    min_days=min_days,
+                    max_days=max_days,
+                    area_ha=loc["area_hectares"],
+                    budget_per_ha=budget_per_ha,
+                    field_type=loc["field_type"],
+                    planting_month=planting_month,
+                    season_overlap_ratio=overlap_ratio
+                )
 
-            if status == "Completed":
-                actual_kg = round(predicted_kg * random.uniform(0.90, 1.10), 2)
-                variance_pct = round(((actual_kg - predicted_kg) / predicted_kg) * 100.0, 2)
-            else:
-                actual_kg = 0.0
-                variance_pct = 0.0
+                if status == "Completed":
+                    actual_kg = round(predicted_kg * random.uniform(0.90, 1.10), 2)
+                    variance_pct = round(((actual_kg - predicted_kg) / predicted_kg) * 100.0, 2)
+                else:
+                    actual_kg = 0.0
+                    variance_pct = 0.0
 
-            records_to_insert.append((
-                crop["crop_id"],
-                loc["location_id"],
-                plant_str,
-                target_min_dt.strftime("%Y-%m-%d"),
-                target_max_dt.strftime("%Y-%m-%d"),
-                actual_harvest_str,
-                predicted_kg,
-                actual_kg,
-                variance_pct,
-                0.0,
-                status,
-                1 if status == "Completed" else 0
-            ))
+                year_records.append((
+                    crop["crop_id"],
+                    loc["location_id"],
+                    plant_str,
+                    target_min_dt.strftime("%Y-%m-%d"),
+                    target_max_dt.strftime("%Y-%m-%d"),
+                    actual_harvest_str,
+                    predicted_kg,
+                    actual_kg,
+                    variance_pct,
+                    0.0,
+                    status,
+                    1 if status == "Completed" else 0
+                ))
+            
+            # Shuffle slightly within the specific year block so entries look natural, then append to main stack
+            random.shuffle(year_records)
+            records_to_insert.extend(year_records)
 
         cursor.executemany("""
             INSERT INTO production_records (
@@ -254,7 +263,7 @@ def _seed_multi_year_records():
 
         for rec_id in range(1, 501):
             num_receipts = random.randint(2, 3)
-            chosen_cats = random.sample(expense_categories, num_spec := num_receipts)
+            chosen_cats = random.sample(expense_categories, num_receipts)
             plant_date_str = records_to_insert[rec_id - 1][2]
 
             for cat_name, desc, min_amt, max_amt in chosen_cats:
