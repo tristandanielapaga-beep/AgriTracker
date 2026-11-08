@@ -2,7 +2,7 @@ import os
 import sqlite3
 import random
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 DB_PATH = os.path.join("database", "agricultural_tracker.db")
 
