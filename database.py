@@ -137,14 +137,13 @@ def _seed_default_catalogs():
         conn.commit()
 
 def _seed_multi_year_records():
-    """Populates 500 synthetic historical production records with synchronized itemized expenses."""
+    """Populates 500 synthetic records dynamically anchored to the current system date."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM production_records;")
         if cursor.fetchone()[0] > 0:
             return
 
-        # Fetch catalog mappings
         cursor.execute("SELECT crop_id, min_growth_days, max_growth_days FROM crops;")
         crops = [dict(r) for r in cursor.fetchall()]
 
@@ -154,42 +153,48 @@ def _seed_multi_year_records():
         records_to_insert = []
         expenses_to_insert = []
 
-        # Generate 500 synthetic operations across 2024, 2025, and 2026
-        base_date = datetime(2024, 1, 1)
+        # DYNAMIC SYSTEM TIME: Automatically grabs today's real-time date
+        present_date = datetime.now()
 
         for i in range(1, 501):
             crop = random.choice(crops)
             loc = random.choice(locations)
 
-            # Random planting date between Jan 2024 and Aug 2026
-            days_offset = random.randint(0, 950)
-            plant_dt = base_date + timedelta(days=days_offset)
-            plant_str = plant_dt.strftime("%Y-%m-%d")
-
-            # Harvest targets
             min_days = crop["min_growth_days"]
             max_days = crop["max_growth_days"]
-            target_min_dt = plant_dt + timedelta(days=min_days)
-            target_max_dt = plant_dt + timedelta(days=max_days)
 
-            # 90% completed, 10% in-progress
             is_completed = random.random() < 0.90
             status = "Completed" if is_completed else "In Progress"
 
-            # Yield dynamics
-            predicted_kg = round(loc["area_hectares"] * random.uniform(3500.0, 6500.0), 2)
-            
             if is_completed:
-                actual_harvest_dt = plant_dt + timedelta(days=random.randint(min_days - 5, max_days + 5))
+                # Historical: Planted between ~2.5 years ago (900 days) and ~3 months ago (90 days)
+                days_ago = random.randint(90, 900)
+                plant_dt = present_date - timedelta(days=days_ago)
+                
+                target_min_dt = plant_dt + timedelta(days=min_days)
+                target_max_dt = plant_dt + timedelta(days=max_days)
+
+                actual_harvest_dt = plant_dt + timedelta(days=random.randint(min_days - 3, max_days + 3))
                 actual_harvest_str = actual_harvest_dt.strftime("%Y-%m-%d")
+
+                predicted_kg = round(loc["area_hectares"] * random.uniform(3500.0, 6500.0), 2)
                 variance_mult = random.uniform(0.88, 1.12)
                 actual_kg = round(predicted_kg * variance_mult, 2)
                 variance_pct = round(((actual_kg - predicted_kg) / predicted_kg) * 100.0, 2)
             else:
+                # ACTIVE IN-PROGRESS: Planted recently (15 to 45 days before TODAY)
+                days_ago = random.randint(15, min(45, min_days - 10))
+                plant_dt = present_date - timedelta(days=days_ago)
+
+                target_min_dt = plant_dt + timedelta(days=min_days)
+                target_max_dt = plant_dt + timedelta(days=max_days)
+
                 actual_harvest_str = None
+                predicted_kg = round(loc["area_hectares"] * random.uniform(3500.0, 6500.0), 2)
                 actual_kg = 0.0
                 variance_pct = 0.0
 
+            plant_str = plant_dt.strftime("%Y-%m-%d")
             records_to_insert.append((
                 crop["crop_id"],
                 loc["location_id"],
@@ -200,9 +205,9 @@ def _seed_multi_year_records():
                 predicted_kg,
                 actual_kg,
                 variance_pct,
-                0.0,  # Will be auto-summed from child expenses
+                0.0,
                 status,
-                1
+                1 if is_completed else 0
             ))
 
         cursor.executemany("""
@@ -213,18 +218,18 @@ def _seed_multi_year_records():
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """, records_to_insert)
 
-        # Generate matching itemized line-item receipts for all 500 records
+        # Seed matching expense receipts for all 500 records
         expense_categories = [
             ('Seeds/Seedlings', 'High-Yield Certified Seeds Batch', 6000.0, 18000.0),
             ('Fertilizer/Soil Inputs', 'Soil Nutrients and Compost Blend', 8000.0, 25000.0),
-            ('Labor/Workforce', 'Land Preparation & Harvest Labor', 5000.0, 15000.0),
+            ('Labor/Workforce', 'Land Preparation & Planting Labor', 5000.0, 15000.0),
             ('Fuel/Irrigation/Utilities', 'Irrigation Pump Diesel', 3000.0, 10000.0)
         ]
 
         for rec_id in range(1, 501):
-            # Select 2 to 3 random expense entries per record
             num_receipts = random.randint(2, 3)
             chosen_cats = random.sample(expense_categories, num_receipts)
+            plant_date_str = records_to_insert[rec_id - 1][2]
             
             for cat_name, desc, min_amt, max_amt in chosen_cats:
                 amt = round(random.uniform(min_amt, max_amt), 2)
@@ -233,7 +238,7 @@ def _seed_multi_year_records():
                     cat_name,
                     desc,
                     amt,
-                    records_to_insert[rec_id - 1][2]  # Log date = planting date
+                    plant_date_str
                 ))
 
         cursor.executemany("""
@@ -241,7 +246,7 @@ def _seed_multi_year_records():
             VALUES (?, ?, ?, ?, ?);
         """, expenses_to_insert)
 
-        # Synchronize total cumulative expenses across all parent records
+        # Synchronize total cumulative expenses across parent records
         cursor.execute("""
             UPDATE production_records
             SET total_expenses_php = (
