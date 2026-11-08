@@ -26,10 +26,10 @@ def calculate_season_overlap_ratio(planting_month: int, growth_days: int, prefer
             
     return round(matched_days / growth_days, 4)
 
-def generate_historical_dataset(num_samples: int = 500, filename: str = "data/historical_farm_data.csv"):
+def generate_historical_dataset(num_samples: int = 1500, filename: str = "data/historical_farm_data.csv"):
     """
     Generates domain-informed synthetic historical farm records across 5 agricultural categories
-    to pre-train the yield prediction regression model.
+    to pre-train the yield prediction regression model (expanded to 1,500 samples).
     """
     os.makedirs("data", exist_ok=True)
     np.random.seed(42)  # Fixed seed for reproducible benchmarks
