@@ -428,3 +428,54 @@ def delete_itemized_expense(expense_id: int) -> Optional[int]:
 
         conn.commit()
         return record_id
+    
+def update_production_record(
+    record_id: int, 
+    crop_id: int, 
+    location_id: int, 
+    planting_date_str: str, 
+    target_min: str, 
+    target_max: str, 
+    predicted_yield_kg: float
+) -> bool:
+    """Updates core planting details of a production record and recalculates predictions."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE production_records
+            SET crop_id = ?,
+                location_id = ?,
+                planting_date = ?,
+                target_min_harvest_date = ?,
+                target_max_harvest_date = ?,
+                predicted_yield_kg = ?
+            WHERE record_id = ?;
+        """, (crop_id, location_id, planting_date_str, target_min, target_max, predicted_yield_kg, record_id))
+        conn.commit()
+        return cursor.rowcount > 0
+
+def delete_crop_catalog_item(crop_id: int) -> Tuple[bool, str]:
+    """Deletes a crop variant only if it is not linked to any production records."""
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM crops WHERE crop_id = ?;", (crop_id,))
+            conn.commit()
+            if cursor.rowcount == 0:
+                return False, f"Crop ID #{crop_id} not found."
+            return True, f"Crop ID #{crop_id} deleted successfully."
+    except sqlite3.IntegrityError:
+        return False, f"Cannot delete Crop ID #{crop_id} because active or historical production records are referencing it."
+
+def delete_location_catalog_item(location_id: int) -> Tuple[bool, str]:
+    """Deletes a farm plot location only if it is not linked to any production records."""
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM locations WHERE location_id = ?;", (location_id,))
+            conn.commit()
+            if cursor.rowcount == 0:
+                return False, f"Location ID #{location_id} not found."
+            return True, f"Location ID #{location_id} deleted successfully."
+    except sqlite3.IntegrityError:
+        return False, f"Cannot delete Location ID #{location_id} because active or historical production records are referencing it."

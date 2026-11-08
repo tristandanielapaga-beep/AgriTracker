@@ -361,3 +361,96 @@ def record_harvest_completion(record_id: int, actual_harvest_date_str: str, actu
         "timing_status": timing_status,
         "message": f"Harvest logged for Record #{record_id}. Yield: {actual_yield_kg:,.2f} kg (Variance: {variance_sign}{variance_pct:.2f}%, Timing: {timing_status})."
     }
+
+def validate_planting_date_horizon(planting_date_str: str, min_year: int = 2020, max_future_days: int = 365) -> Tuple[bool, str]:
+    """
+    Task 6 Guard: Enforces planting dates within realistic boundaries:
+    - No earlier than Jan 1, 2020
+    - No later than 1 year into the future from system clock
+    """
+    if not validate_date_format(planting_date_str):
+        return False, "Invalid date format. Use YYYY-MM-DD."
+
+    plant_dt = datetime.strptime(planting_date_str.strip(), "%Y-%m-%d")
+    min_allowed = datetime(min_year, 1, 1)
+    max_allowed = datetime.now() + timedelta(days=max_future_days)
+
+    if plant_dt < min_allowed:
+        return False, f"Planting date cannot be earlier than {min_year}-01-01."
+    if plant_dt > max_allowed:
+        return False, f"Planting date cannot be more than 1 year in the future ({max_allowed.strftime('%Y-%m-%d')})."
+
+    return True, "Valid"
+
+def get_dynamic_record_status(status: str, target_max_harvest_date: str) -> str:
+    """
+    Task 5 Alert: Dynamically tags active records as OVERDUE if target harvest date is past present time.
+    """
+    if status.strip().lower() == "in progress" and target_max_harvest_date:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        if today_str > target_max_harvest_date:
+            return "In Progress [OVERDUE]"
+    return status
+
+def edit_planting_operation(record_id: int, new_crop_id: int, new_location_id: int, new_planting_date_str: str) -> Dict[str, Any]:
+    """
+    Task 3 Engine: Modifies planting details and re-runs ML yield prediction.
+    """
+    is_valid_horizon, err_msg = validate_planting_date_horizon(new_planting_date_str)
+    if not is_valid_horizon:
+        return {"success": False, "message": err_msg}
+
+    crops = {c["crop_id"]: c for c in db.fetch_all_crops()}
+    locations = {l["location_id"]: l for l in db.fetch_all_locations()}
+
+    if new_crop_id not in crops:
+        return {"success": False, "message": f"Crop ID #{new_crop_id} not found."}
+    if new_location_id not in locations:
+        return {"success": False, "message": f"Location ID #{new_location_id} not found."}
+
+    crop = crops[new_crop_id]
+    loc = locations[new_location_id]
+
+    target_min, target_max = calculate_target_harvest_window(
+        new_planting_date_str, crop["min_growth_days"], crop["max_growth_days"]
+    )
+
+    plant_dt = datetime.strptime(new_planting_date_str.strip(), "%Y-%m-%d")
+    overlap_ratio, season_tag = compute_pagasa_overlap(
+        new_planting_date_str, crop["min_growth_days"], crop["preferred_sub_season"]
+    )
+
+    # Fetch active total expenses to estimate budget per hectare
+    existing_records = {r['record_id']: r for r in db.fetch_joined_records()}
+    existing_rec = existing_records.get(record_id)
+    total_exp = existing_rec['total_expenses_php'] if existing_rec else 0.0
+    
+    budget_per_ha = (total_exp / loc["area_hectares"]) if total_exp > 0 else 25000.0
+
+    new_predicted_yield_kg = ml_model.predict_crop_yield(
+        category=crop["category"],
+        min_days=crop["min_growth_days"],
+        max_days=crop["max_growth_days"],
+        area_ha=loc["area_hectares"],
+        budget_per_ha=budget_per_ha,
+        field_type=loc["field_type"],
+        planting_month=plant_dt.month,
+        season_overlap_ratio=overlap_ratio
+    )
+
+    success = db.update_production_record(
+        record_id=record_id,
+        crop_id=new_crop_id,
+        location_id=new_location_id,
+        planting_date_str=new_planting_date_str.strip(),
+        target_min=target_min,
+        target_max=target_max,
+        predicted_yield_kg=new_predicted_yield_kg
+    )
+
+    if success:
+        return {
+            "success": True,
+            "message": f"Record #{record_id} updated. Recalculated ML Yield: {new_predicted_yield_kg:,.2f} kg ({season_tag})."
+        }
+    return {"success": False, "message": "Failed to update record in database."}
