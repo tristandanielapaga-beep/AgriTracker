@@ -363,34 +363,62 @@ def log_harvest_workflow():
 
 
 def manage_expenses_workflow():
-    """Interactive console for viewing, adding, editing, and deleting itemized expenses."""
-    clear_screen()
-    print_header("Manage Itemized Production Expenses")
+    """Interactive console with pagination for managing itemized production expenses."""
+    current_page = 1
+    page_size = 10
 
-    all_records = db.fetch_joined_records()
-    records_dict = {r['record_id']: r for r in all_records}
+    while True:
+        clear_screen()
+        all_records = db.fetch_joined_records()
+        pagination = fn.paginate_records(all_records, page=current_page, page_size=page_size)
 
-    if not all_records:
-        print("[!] No production records available.")
-        input("Press Enter to return...")
-        return
+        print_header("Manage Itemized Production Expenses")
+        print(f"Select a Production Record (Page {pagination['current_page']} of {pagination['total_pages']} | Total: {pagination['total_records']}):\n")
+        print(f" {'ID':<4} | {'Crop Name':<16} | {'Location':<25} | {'Total Expenses (₱)'}")
+        print("-" * 75)
 
-    print("PRODUCTION RECORDS:")
-    for r in all_records:
-        print(f"  [{r['record_id']}] {r['crop_name']} at {r['location_name']} (Total Expenses: ₱{r['total_expenses_php']:,.2f})")
+        if not pagination["items"]:
+            print("  (No production records available)")
+        else:
+            for r in pagination["items"]:
+                crop_disp = (r['crop_name'][:13] + '..') if len(r['crop_name']) > 15 else r['crop_name']
+                loc_disp = (r['location_name'][:22] + '..') if len(r['location_name']) > 24 else r['location_name']
+                print(f" [{r['record_id']:<3}] | {crop_disp:<16} | {loc_disp:<25} | ₱{r['total_expenses_php']:<12,.2f}")
+        
+        print("-" * 75)
+        print("Navigation: [N]ext | [P]rev | [J]ump Page | [S]elect Record ID | [B]ack")
+        choice = input("Select option: ").strip().lower()
 
-    try:
-        rec_id = int(input("\nSelect Record ID to manage expenses: ").strip())
-    except ValueError:
-        print("[!] Invalid Record ID.")
-        input("Press Enter to return...")
-        return
-
-    if rec_id not in records_dict:
-        print(f"[!] Record ID #{rec_id} not found.")
-        input("Press Enter to return...")
-        return
-
+        if choice == 'n':
+            if current_page < pagination["total_pages"]:
+                current_page += 1
+        elif choice == 'p':
+            if current_page > 1:
+                current_page -= 1
+        elif choice == 'j':
+            try:
+                target_p = int(input(f"Enter Page Number (1-{pagination['total_pages']}): ").strip())
+                if 1 <= target_p <= pagination["total_pages"]:
+                    current_page = target_p
+            except ValueError:
+                pass
+        elif choice == 's':
+            try:
+                rec_id = int(input("Enter Production Record ID to manage expenses: ").strip())
+                records_dict = {r['record_id']: r for r in all_records}
+                if rec_id in records_dict:
+                    _run_expense_item_manager(rec_id)
+                else:
+                    print(f"[!] Record ID #{rec_id} not found.")
+                    input("Press Enter...")
+            except ValueError:
+                print("[!] Invalid Record ID.")
+                input("Press Enter...")
+        elif choice == 'b':
+            break
+        
+def _run_expense_item_manager(rec_id: int):
+    """Sub-loop for managing expense line items for a specific record."""
     while True:
         clear_screen()
         target_rec = {r['record_id']: r for r in db.fetch_joined_records()}[rec_id]
@@ -410,7 +438,7 @@ def manage_expenses_workflow():
                 print(f" [{e['expense_id']:<2}] | {e['date_logged']} | {e['expense_category']:<25} | ₱{e['amount_php']:<11,.2f} | {e['description']}")
         print("-" * 75)
 
-        print("\nOptions: [A]dd Expense | [E]dit Expense | [D]elete Expense | [B]ack to Main Menu")
+        print("\nOptions: [A]dd Expense | [E]dit Expense | [D]elete Expense | [B]ack")
         choice = input("Select an option: ").strip().lower()
 
         categories = [
@@ -420,7 +448,6 @@ def manage_expenses_workflow():
 
         if choice == 'a':
             print("\n--- ADD NEW EXPENSE ITEM ---")
-            print("EXPENSE CATEGORIES:")
             for idx, cat in enumerate(categories, 1):
                 print(f"  [{idx}] {cat}")
             try:
@@ -428,7 +455,7 @@ def manage_expenses_workflow():
                 selected_cat = categories[cat_idx]
             except (ValueError, IndexError):
                 print("[!] Invalid Category selection.")
-                input("Press Enter to continue...")
+                input("Press Enter...")
                 continue
 
             desc = input("Enter Description: ").strip()
@@ -436,8 +463,8 @@ def manage_expenses_workflow():
             date_str = input("Enter Expense Date (YYYY-MM-DD): ").strip()
 
             if not fn.validate_positive_number(amount_str):
-                print("[!] Invalid amount. Must be positive.")
-                input("Press Enter to continue...")
+                print("[!] Invalid amount.")
+                input("Press Enter...")
                 continue
 
             is_valid_date, date_err = fn.validate_expense_date(
@@ -447,94 +474,70 @@ def manage_expenses_workflow():
             )
             if not is_valid_date:
                 print(f"\n[!] DATE ERROR: {date_err}")
-                input("Press Enter to continue...")
+                input("Press Enter...")
                 continue
 
             db.add_itemized_expense(rec_id, selected_cat, desc, float(amount_str), date_str)
             print("[+] Expense line item added successfully!")
-            input("Press Enter to continue...")
+            input("Press Enter...")
 
         elif choice == 'e':
             if not expenses:
                 print("[!] No expenses to edit.")
-                input("Press Enter to continue...")
+                input("Press Enter...")
                 continue
             try:
                 exp_id = int(input("\nEnter Expense Line Item ID to Edit: ").strip())
             except ValueError:
                 print("[!] Invalid Expense ID.")
-                input("Press Enter to continue...")
+                input("Press Enter...")
                 continue
 
             exp_dict = {e['expense_id']: e for e in expenses}
             if exp_id not in exp_dict:
                 print(f"[!] Expense ID #{exp_id} not found.")
-                input("Press Enter to continue...")
+                input("Press Enter...")
                 continue
 
             target_exp = exp_dict[exp_id]
-            print(f"\nEditing Expense #{exp_id} ({target_exp['description']}):")
-            print("EXPENSE CATEGORIES:")
+            print(f"\nEditing Expense #{exp_id}:")
             for idx, cat in enumerate(categories, 1):
                 print(f"  [{idx}] {cat}")
             try:
                 cat_idx = int(input(f"Select Category ID [Current: {target_exp['expense_category']}]: ").strip()) - 1
                 selected_cat = categories[cat_idx]
             except (ValueError, IndexError):
-                print("[!] Invalid Category selection.")
-                input("Press Enter to continue...")
-                continue
+                selected_cat = target_exp['expense_category']
 
             desc = input(f"Enter Description [Current: '{target_exp['description']}']: ").strip() or target_exp['description']
             amount_str = input(f"Enter Amount in PHP [Current: ₱{target_exp['amount_php']:,.2f}]: ").strip()
             amount = float(amount_str) if amount_str and fn.validate_positive_number(amount_str) else target_exp['amount_php']
-            
             date_str = input(f"Enter Date [Current: {target_exp['date_logged']}]: ").strip() or target_exp['date_logged']
-
-            is_valid_date, date_err = fn.validate_expense_date(
-                expense_date_str=date_str,
-                planting_date_str=target_rec['planting_date'],
-                actual_harvest_date_str=target_rec['actual_harvest_date']
-            )
-            if not is_valid_date:
-                print(f"\n[!] DATE ERROR: {date_err}")
-                input("Press Enter to continue...")
-                continue
 
             db.update_itemized_expense(exp_id, selected_cat, desc, amount, date_str)
             print(f"[+] Expense #{exp_id} updated successfully!")
-            input("Press Enter to continue...")
+            input("Press Enter...")
 
         elif choice == 'd':
             if not expenses:
                 print("[!] No expenses to delete.")
-                input("Press Enter to continue...")
+                input("Press Enter...")
                 continue
             try:
                 exp_id = int(input("\nEnter Expense Line Item ID to Delete: ").strip())
             except ValueError:
                 print("[!] Invalid Expense ID.")
-                input("Press Enter to continue...")
+                input("Press Enter...")
                 continue
 
-            exp_dict = {e['expense_id']: e for e in expenses}
-            if exp_id not in exp_dict:
-                print(f"[!] Expense ID #{exp_id} not found.")
-                input("Press Enter to continue...")
-                continue
-
-            target_exp = exp_dict[exp_id]
-            confirm = input(f"Are you sure you want to delete expense '{target_exp['description']}' (₱{target_exp['amount_php']:,.2f})? (y/n): ").strip().lower()
-            if confirm == 'y':
+            if input(f"Confirm deletion of Expense #{exp_id}? (y/n): ").strip().lower() == 'y':
                 db.delete_itemized_expense(exp_id)
-                print(f"[+] Expense #{exp_id} deleted successfully.")
-            else:
-                print("[*] Deletion cancelled.")
-            input("Press Enter to continue...")
+                print(f"[+] Expense #{exp_id} deleted.")
+                input("Press Enter...")
 
         elif choice == 'b':
             break
-
+        
 def delete_record_workflow():
     """Deletes a record with strict confirmation guard."""
     clear_screen()
