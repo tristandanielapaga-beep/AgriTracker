@@ -4,7 +4,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from generate_synthetic_data import generate_historical_dataset, calculate_season_overlap_ratio
+from generate_synthetic_data import generate_historical_dataset
 
 DATA_PATH = os.path.join("data", "historical_farm_data.csv")
 _MODEL_PIPELINE = None

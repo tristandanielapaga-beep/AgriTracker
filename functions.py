@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Tuple, Optional
+from generate_synthetic_data import calculate_season_overlap_ratio
 
 import database as db
 import ml_model
@@ -121,7 +122,7 @@ def compute_pagasa_overlap(planting_date_str: str, growth_days: int, preferred_s
     plant_dt = datetime.strptime(planting_date_str.strip(), "%Y-%m-%d")
     planting_month = plant_dt.month
     
-    overlap_ratio = ml_model.calculate_season_overlap_ratio(planting_month, growth_days, preferred_sub_season)
+    overlap_ratio = calculate_season_overlap_ratio(planting_month, growth_days, preferred_sub_season)
     
     if overlap_ratio >= 0.75:
         seasonality_tag = "In-Season"
