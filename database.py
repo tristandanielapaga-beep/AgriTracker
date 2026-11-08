@@ -3,6 +3,7 @@ import sqlite3
 import random
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
+import generate_synthetic_data
 import ml_model
 
 DB_PATH = os.path.join("database", "agricultural_tracker.db")
