@@ -20,35 +20,92 @@ def print_header(title: str):
 
 
 def render_ledger_table(items: List[Dict[str, Any]], current_page: int, total_pages: int, total_records: int):
-    """Renders a paginated summary ledger table directly in the terminal."""
-    print("\n" + "=" * 115)
+    """Renders tabular ledger view with dynamic OVERDUE tags."""
+    print("=" * 115)
     print(f"                                AGRICULTURAL PRODUCTION LEDGER (Page {current_page} of {total_pages} | Total: {total_records})")
     print("=" * 115)
-    print(f"{'ID':<4} | {'Crop Name':<16} | {'Location':<25} | {'Area (ha)':<9} | {'Planted':<10} | {'Pred (kg)':<10} | {'Actual (kg)':<11} | {'Var %':<7} | {'Expenses (₱)':<12} | {'Status'}")
+    print(f"{'ID':<4} | {'Crop Name':<16} | {'Location':<25} | {'Area (ha)':<9} | {'Planted':<10} | {'Pred (kg)':<10} | {'Actual (kg)':<11} | {'Expenses (₱)':<12} | {'Status'}")
     print("-" * 115)
 
     if not items:
-        print("                                   [ No production records found ]")
+        print("  (No production records found matching criteria)")
     else:
         for r in items:
-            var_str = f"{r['yield_variance_pct']:+.1f}%" if r['status'] == 'Completed' else "N/A"
-            actual_str = f"{r['actual_yield_kg']:,.2f}" if r['status'] == 'Completed' else "Pending"
-            loc_name = (r['location_name'][:22] + "..") if len(r['location_name']) > 24 else r['location_name']
-            crop_name = (r['crop_name'][:14] + "..") if len(r['crop_name']) > 16 else r['crop_name']
+            crop_disp = (r['crop_name'][:13] + '..') if len(r['crop_name']) > 15 else r['crop_name']
+            loc_disp = (r['location_name'][:22] + '..') if len(r['location_name']) > 24 else r['location_name']
+            act_yield_str = f"{r['actual_yield_kg']:,.2f}" if r['status'] == 'Completed' else "Pending"
+            
+            # Dynamic Overdue Tagging
+            dyn_status = fn.get_dynamic_record_status(r['status'], r['target_max_harvest_date'])
 
-            print(
-                f"{r['record_id']:<4} | "
-                f"{crop_name:<16} | "
-                f"{loc_name:<25} | "
-                f"{r['area_hectares']:<9.2f} | "
-                f"{r['planting_date']:<10} | "
-                f"{r['predicted_yield_kg']:<10,.2f} | "
-                f"{actual_str:<11} | "
-                f"{var_str:<7} | "
-                f"₱{r['total_expenses_php']:<11,.2f} | "
-                f"{r['status']}"
-            )
+            print(f"{r['record_id']:<4} | {crop_disp:<16} | {loc_disp:<25} | {r['area_hectares']:<9.2f} | {r['planting_date']} | {r['predicted_yield_kg']:<10,.2f} | {act_yield_str:<11} | ₱{r['total_expenses_php']:<11,.2f} | {dyn_status}")
+
     print("=" * 115)
+
+
+def edit_record_workflow():
+    """Interactive workflow for editing planting metadata of existing operations."""
+    clear_screen()
+    print_header("Edit Production Record Metadata")
+
+    all_records = db.fetch_joined_records()
+    records_dict = {r['record_id']: r for r in all_records}
+
+    if not all_records:
+        print("[!] No records available to edit.")
+        input("Press Enter to return...")
+        return
+
+    try:
+        rec_id = int(input("Enter Production Record ID to Edit: ").strip())
+    except ValueError:
+        print("[!] Invalid Record ID.")
+        input("Press Enter to return...")
+        return
+
+    if rec_id not in records_dict:
+        print(f"[!] Record ID #{rec_id} not found.")
+        input("Press Enter to return...")
+        return
+
+    target = records_dict[rec_id]
+    print(f"\nEditing Record #{rec_id} (Current Crop: {target['crop_name']} | Location: {target['location_name']} | Planted: {target['planting_date']}):")
+
+    crops = db.fetch_all_crops()
+    locations = db.fetch_all_locations()
+
+    print("\nAVAILABLE CROPS:")
+    for c in crops:
+        print(f"  [{c['crop_id']}] {c['crop_name']} ({c['category']})")
+    try:
+        crop_id_input = input(f"Select Crop ID [Current: {target['crop_id']}]: ").strip()
+        new_crop_id = int(crop_id_input) if crop_id_input else target['crop_id']
+    except ValueError:
+        print("[!] Invalid Crop Selection.")
+        input("Press Enter to return...")
+        return
+
+    print("\nAVAILABLE LOCATIONS:")
+    for l in locations:
+        print(f"  [{l['location_id']}] {l['location_name']} ({l['area_hectares']} ha)")
+    try:
+        loc_id_input = input(f"Select Location ID [Current: {target['location_id']}]: ").strip()
+        new_loc_id = int(loc_id_input) if loc_id_input else target['location_id']
+    except ValueError:
+        print("[!] Invalid Location Selection.")
+        input("Press Enter to return...")
+        return
+
+    new_date = input(f"Enter Planting Date YYYY-MM-DD [Current: {target['planting_date']}]: ").strip() or target['planting_date']
+
+    res = fn.edit_planting_operation(rec_id, new_crop_id, new_loc_id, new_date)
+
+    if res["success"]:
+        print(f"\n[+] SUCCESS: {res['message']}")
+    else:
+        print(f"\n[!] UPDATE FAILED: {res['message']}")
+
+    input("\nPress Enter to return to main menu...")
 
 
 def view_ledger_workflow():
