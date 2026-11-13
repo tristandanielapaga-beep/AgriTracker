@@ -1,0 +1,54 @@
+AGRICULTURAL TRACKER - POSTGRESQL APPLICATION BACKEND
+
+WHAT CHANGED
+- database.py now connects to PostgreSQL using DATABASE_URL from .env.
+- It reads the existing migrated tables and does not reseed or overwrite data.
+- functions.py now uses PostgreSQL placeholders (%s) and RETURNING for generated IDs.
+- Harvest completion uses the existing validation/business function.
+- Main.py uses a targeted record lookup for harvest/deletion and the deletion function
+  now exists in the PostgreSQL database layer.
+- Deleting a production record cascades to its itemized expenses as defined by the schema.
+
+BEFORE REPLACING FILES
+1. Back up the current project files:
+   database.py -> database_sqlite_backup.py
+   functions.py -> functions_sqlite_backup.py
+   Main.py -> Main_sqlite_backup.py
+
+2. Copy these three replacement files into the project root, overwriting the originals:
+   database.py
+   functions.py
+   Main.py
+
+3. Keep your existing .env file in the project root. Do not upload or share it.
+
+4. Install dependencies if not already installed:
+   pip install -r requirements-postgres.txt
+
+TEST 1 - CONNECTIVITY AND SCHEMA
+Run:
+   python -c "import database; database.init_db()"
+
+Expected:
+   [+] Connected to PostgreSQL. Existing migrated data is ready.
+
+TEST 2 - READ COUNTS
+Run:
+   python -c "import database; print(len(database.fetch_all_crops()), len(database.fetch_all_locations()), database.count_production_records())"
+
+Expected:
+   11 6 502
+
+TEST 3 - START APP
+Run:
+   python Main.py
+
+Do not delete agricultural_tracker.db. This is still the SQLite backup.
+If any test fails, copy the full error message (but never share your .env password).
+
+IMPORTANT LIMITATIONS
+- These replacement files have passed Python syntax parsing, but still require runtime
+  testing on your Windows/PostgreSQL installation.
+- Existing historical/synthetic values are not changed in this pass.
+- The next milestone after backend smoke tests is correcting synthetic-data generation
+  and then adding the Streamlit GUI.

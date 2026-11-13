@@ -429,19 +429,18 @@ def log_harvest_workflow():
             current_page = 1
         elif choice.isdigit():
             rec_id = int(choice)
-            records_dict = {r['record_id']: r for r in db.fetch_joined_records()}
-            if rec_id in records_dict:
-                target = records_dict[rec_id]
+            target = db.fetch_joined_record_by_id(rec_id)
+            if target is not None:
                 print(f"\nSelected Record #{rec_id}: {target['crop_name']} at {target['location_name']}")
                 print(f"Current Status: {target['status']} | Predicted Yield: {target['predicted_yield_kg']:,.2f} kg")
                 
                 actual_yield_str = input("Enter Actual Harvest Yield (kg): ").strip()
                 actual_date_str = input("Enter Actual Harvest Date (YYYY-MM-DD): ").strip()
                 
-                if fn.validate_positive_number(actual_yield_str):
+                if fn.validate_non_negative_number(actual_yield_str):
                     actual_yield = float(actual_yield_str)
-                    db.update_harvest_output(rec_id, actual_yield, actual_date_str, status="Completed")
-                    print(f"[+] Harvest successfully logged and Record #{rec_id} marked as Completed!")
+                    result = fn.record_harvest_completion(rec_id, actual_date_str, actual_yield)
+                    print(f"[+] {result['message']}" if result["success"] else f"[!] {result['message']}")
                 else:
                     print("[!] Invalid yield amount entered.")
                 input("Press Enter to continue...")
@@ -729,13 +728,14 @@ def delete_record_workflow():
             current_page = 1
         elif choice.isdigit():
             rec_id = int(choice)
-            records_dict = {r['record_id']: r for r in db.fetch_joined_records()}
-            if rec_id in records_dict:
-                target = records_dict[rec_id]
+            target = db.fetch_joined_record_by_id(rec_id)
+            if target is not None:
                 confirm = input(f"Are you sure you want to delete Record #{rec_id} ({target['crop_name']} at {target['location_name']})? This will also remove child expenses. (y/n): ").strip().lower()
                 if confirm == 'y':
-                    db.delete_production_record(rec_id)
-                    print(f"[+] Record #{rec_id} deleted successfully.")
+                    if db.delete_production_record(rec_id):
+                        print(f"[+] Record #{rec_id} deleted successfully.")
+                    else:
+                        print(f"[!] Record #{rec_id} could not be deleted.")
                     input("Press Enter to continue...")
             else:
                 print(f"[!] Record ID #{rec_id} not found.")

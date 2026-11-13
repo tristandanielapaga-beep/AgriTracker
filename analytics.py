@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
-import database as db
+import database_sqlite_backup as db
 
 CHARTS_DIR = "charts"
 

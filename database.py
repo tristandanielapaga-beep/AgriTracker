@@ -1,509 +1,243 @@
+"""PostgreSQL database layer for Agricultural Tracker.
+
+Uses DATABASE_URL from .env. Keep the old SQLite database as a backup;
+this module connects only to PostgreSQL.
+"""
 import os
-import sqlite3
-import random
-from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
-import generate_synthetic_data
-import ml_model
 
-DB_PATH = os.path.join("database", "agricultural_tracker.db")
+import psycopg
+from psycopg.rows import dict_row
+from psycopg.errors import ForeignKeyViolation
+from dotenv import load_dotenv
 
-def get_connection() -> sqlite3.Connection:
-    """
-    Establishes connection to the SQLite database and enforces Foreign Key constraints.
-    """
-    os.makedirs("database", exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA foreign_keys = ON;")
-    conn.row_factory = sqlite3.Row
-    return conn
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is missing. Create a .env file beside Main.py "
+        "and set DATABASE_URL=postgresql://..."
+    )
+
+
+def get_connection():
+    """Open a PostgreSQL connection with dictionary-style query results."""
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+
 
 def init_db():
-    """
-    Initializes database tables and populates default catalogs and multi-year historical records.
-    """
+    """Check that the migrated PostgreSQL tables are present; never reseed data."""
+    required = ("crops", "locations", "production_records", "production_expenses")
     with get_connection() as conn:
-        cursor = conn.cursor()
+        with conn.cursor() as cur:
+            for table in required:
+                cur.execute("SELECT to_regclass(%s) AS table_name", (f"public.{table}",))
+                if cur.fetchone()["table_name"] is None:
+                    raise RuntimeError(
+                        f"PostgreSQL table '{table}' is missing. "
+                        "Run the migration script before starting the application."
+                    )
+    print("[+] Connected to PostgreSQL. Existing migrated data is ready.")
 
-        # 1. Crops Catalog Table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS crops (
-                crop_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                crop_name TEXT UNIQUE NOT NULL,
-                category TEXT NOT NULL CHECK(category IN (
-                    'Grains', 'Vegetables', 'Fruits', 'Root Crops / Tubers', 'Legumes / Pulses'
-                )),
-                min_growth_days INTEGER NOT NULL CHECK(min_growth_days > 0),
-                max_growth_days INTEGER NOT NULL CHECK(max_growth_days >= min_growth_days),
-                preferred_sub_season TEXT NOT NULL CHECK(preferred_sub_season IN (
-                    'Cool Dry', 'Hot Dry', 'Wet', 'Year-Round'
-                ))
-            );
-        """)
-
-        # 2. Locations Lookup Table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS locations (
-                location_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                location_name TEXT UNIQUE NOT NULL,
-                field_type TEXT NOT NULL CHECK(field_type IN (
-                    'Irrigated Lowland', 'Rainfed Upland', 'Greenhouse/Controlled'
-                )),
-                area_hectares REAL NOT NULL CHECK(area_hectares > 0)
-            );
-        """)
-
-        # 3. Production Records Table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS production_records (
-                record_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                crop_id INTEGER NOT NULL,
-                location_id INTEGER NOT NULL,
-                planting_date TEXT NOT NULL,
-                target_min_harvest_date TEXT NOT NULL,
-                target_max_harvest_date TEXT NOT NULL,
-                actual_harvest_date TEXT,
-                predicted_yield_kg REAL NOT NULL CHECK(predicted_yield_kg >= 0),
-                actual_yield_kg REAL DEFAULT 0.0 CHECK(actual_yield_kg >= 0),
-                yield_variance_pct REAL DEFAULT 0.0,
-                total_expenses_php REAL DEFAULT 0.0 CHECK(total_expenses_php >= 0),
-                status TEXT NOT NULL CHECK(status IN ('In Progress', 'Completed', 'Cancelled')),
-                is_historical INTEGER NOT NULL DEFAULT 0 CHECK(is_historical IN (0, 1)),
-                FOREIGN KEY (crop_id) REFERENCES crops(crop_id) ON DELETE RESTRICT,
-                FOREIGN KEY (location_id) REFERENCES locations(location_id) ON DELETE RESTRICT
-            );
-        """)
-
-        # 4. Itemized Production Expenses Table ($1:N$ Child Table)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS production_expenses (
-                expense_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                record_id INTEGER NOT NULL,
-                expense_category TEXT NOT NULL CHECK(expense_category IN (
-                    'Seeds/Seedlings', 'Fertilizer/Soil Inputs', 'Pesticides/Crop Protection', 
-                    'Labor/Workforce', 'Fuel/Irrigation/Utilities', 'Equipment/Maintenance', 'Other'
-                )),
-                description TEXT NOT NULL,
-                amount_php REAL NOT NULL CHECK(amount_php > 0),
-                date_logged TEXT NOT NULL,
-                FOREIGN KEY (record_id) REFERENCES production_records(record_id) ON DELETE CASCADE
-            );
-        """)
-
-        conn.commit()
-
-    # Seed default baseline data if tables are empty
-    _seed_default_catalogs()
-    _seed_multi_year_records()
-
-def _seed_default_catalogs():
-    """Seeds baseline crops and farm locations into SQLite."""
-    with get_connection() as conn:
-        cursor = conn.cursor()
-
-        # Seed Crops Catalog
-        cursor.execute("SELECT COUNT(*) FROM crops")
-        if cursor.fetchone()[0] == 0:
-            default_crops = [
-                ("Lowland Rice", "Grains", 100, 120, "Wet"),
-                ("Yellow Corn", "Grains", 85, 105, "Hot Dry"),
-                ("Tomato", "Vegetables", 60, 80, "Hot Dry"),
-                ("Cabbage", "Vegetables", 70, 90, "Cool Dry"),
-                ("Bitter Gourd (Ampalaya)", "Vegetables", 60, 80, "Hot Dry"),
-                ("Banana (Saba)", "Fruits", 270, 365, "Year-Round"),
-                ("Watermelon", "Fruits", 75, 90, "Hot Dry"),
-                ("Cassava", "Root Crops / Tubers", 180, 240, "Wet"),
-                ("Taro (Gabi)", "Root Crops / Tubers", 150, 210, "Wet"),
-                ("Mungbean (Mongo)", "Legumes / Pulses", 55, 70, "Cool Dry")
-            ]
-            cursor.executemany("""
-                INSERT INTO crops (crop_name, category, min_growth_days, max_growth_days, preferred_sub_season)
-                VALUES (?, ?, ?, ?, ?)
-            """, default_crops)
-
-        # Seed Locations Catalog
-        cursor.execute("SELECT COUNT(*) FROM locations")
-        if cursor.fetchone()[0] == 0:
-            default_locations = [
-                ("Barangay San Isidro - Main Paddy", "Irrigated Lowland", 2.50),
-                ("Purok 5 - Upper Ridge Parcel", "Rainfed Upland", 1.20),
-                ("Highland Nursery Bay 1", "Greenhouse/Controlled", 0.75),
-                ("Riverside Field Sector A", "Irrigated Lowland", 3.00),
-                ("East Slope Upland Plot", "Rainfed Upland", 1.80)
-            ]
-            cursor.executemany("""
-                INSERT INTO locations (location_name, field_type, area_hectares)
-                VALUES (?, ?, ?)
-            """, default_locations)
-
-        conn.commit()
-
-def _seed_multi_year_records():
-    """Populates 500 synthetic records grouped chronologically by year blocks (2024, 2025, 2026) with live ML predictions."""
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM production_records;")
-        if cursor.fetchone()[0] > 0:
-            return
-
-        cursor.execute("SELECT crop_id, category, min_growth_days, max_growth_days, preferred_sub_season FROM crops;")
-        crops = [dict(r) for r in cursor.fetchall()]
-
-        cursor.execute("SELECT location_id, field_type, area_hectares FROM locations;")
-        locations = [dict(r) for r in cursor.fetchall()]
-
-        records_to_insert = []
-        expenses_to_insert = []
-        present_date = datetime.now()
-
-        # Define year blocks and counts to ensure natural chronological progression by record_id ASC
-        year_blocks = [
-            (2024, 150),  # 150 records for 2024
-            (2025, 200),  # 200 records for 2025
-            (2026, 150)   # 150 records for 2026 (includes recent/active crops)
-        ]
-
-        for target_year, count in year_blocks:
-            year_records = []
-            for i in range(count):
-                crop = random.choice(crops)
-                loc = random.choice(locations)
-
-                min_days = crop["min_growth_days"]
-                max_days = crop["max_growth_days"]
-
-                # Determine status based on year
-                if target_year < present_date.year or (target_year == present_date.year and i >= 30):
-                    status = "Completed"
-                    # Generate random day within the specific calendar year
-                    start_of_year = datetime(target_year, 1, 1)
-                    end_of_year = min(datetime(target_year, 12, 31), present_date - timedelta(days=30))
-                    if start_of_year >= end_of_year:
-                        start_of_year = datetime(target_year, 1, 1)
-                        end_of_year = datetime(target_year, 6, 30)
-                    
-                    delta_days = (end_of_year - start_of_year).days
-                    plant_dt = start_of_year + timedelta(days=random.randint(0, max(0, delta_days)))
-                    
-                    target_min_dt = plant_dt + timedelta(days=min_days)
-                    target_max_dt = plant_dt + timedelta(days=max_days)
-                    
-                    actual_harvest_dt = plant_dt + timedelta(days=random.randint(min_days, max_days))
-                    actual_harvest_str = actual_harvest_dt.strftime("%Y-%m-%d")
-                else:
-                    status = "In Progress"
-                    # Recent planting anchored relative to present_date for 2026 active items
-                    plant_dt = present_date - timedelta(days=random.randint(10, 30))
-                    target_min_dt = plant_dt + timedelta(days=min_days)
-                    target_max_dt = plant_dt + timedelta(days=max_days)
-                    actual_harvest_str = None
-
-                plant_str = plant_dt.strftime("%Y-%m-%d")
-                planting_month = plant_dt.month
-
-                # Calculate PAGASA climate sub-season overlap ratio
-                overlap_ratio = generate_synthetic_data.calculate_season_overlap_ratio(
-                    planting_month, min_days, crop["preferred_sub_season"]
-                )
-                budget_per_ha = round(random.uniform(20000.0, 50000.0), 2)
-
-                # LIVE ML PREDICTION CALL
-                predicted_kg = ml_model.predict_crop_yield(
-                    category=crop["category"],
-                    min_days=min_days,
-                    max_days=max_days,
-                    area_ha=loc["area_hectares"],
-                    budget_per_ha=budget_per_ha,
-                    field_type=loc["field_type"],
-                    planting_month=planting_month,
-                    season_overlap_ratio=overlap_ratio
-                )
-
-                if status == "Completed":
-                    actual_kg = round(predicted_kg * random.uniform(0.90, 1.10), 2)
-                    variance_pct = round(((actual_kg - predicted_kg) / predicted_kg) * 100.0, 2)
-                else:
-                    actual_kg = 0.0
-                    variance_pct = 0.0
-
-                year_records.append((
-                    crop["crop_id"],
-                    loc["location_id"],
-                    plant_str,
-                    target_min_dt.strftime("%Y-%m-%d"),
-                    target_max_dt.strftime("%Y-%m-%d"),
-                    actual_harvest_str,
-                    predicted_kg,
-                    actual_kg,
-                    variance_pct,
-                    0.0,
-                    status,
-                    1 if status == "Completed" else 0
-                ))
-            
-            # Shuffle slightly within the specific year block so entries look natural, then append to main stack
-            random.shuffle(year_records)
-            records_to_insert.extend(year_records)
-
-        cursor.executemany("""
-            INSERT INTO production_records (
-                crop_id, location_id, planting_date, target_min_harvest_date, target_max_harvest_date,
-                actual_harvest_date, predicted_yield_kg, actual_yield_kg, yield_variance_pct,
-                total_expenses_php, status, is_historical
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        """, records_to_insert)
-
-        # Seed synchronized itemized expense receipts
-        expense_categories = [
-            ('Seeds/Seedlings', 'Certified High-Yield Seed Batch', 4000.0, 12000.0),
-            ('Fertilizer/Soil Inputs', 'Organic NPK Soil Enhancers', 6000.0, 18000.0),
-            ('Labor/Workforce', 'Land Prep and Planting Crew', 5000.0, 15000.0),
-            ('Fuel/Irrigation/Utilities', 'Pump Fuel and Water Fees', 2500.0, 8000.0)
-        ]
-
-        for rec_id in range(1, 501):
-            num_receipts = random.randint(2, 3)
-            chosen_cats = random.sample(expense_categories, num_receipts)
-            plant_date_str = records_to_insert[rec_id - 1][2]
-
-            for cat_name, desc, min_amt, max_amt in chosen_cats:
-                amt = round(random.uniform(min_amt, max_amt), 2)
-                expenses_to_insert.append((rec_id, cat_name, desc, amt, plant_date_str))
-
-        cursor.executemany("""
-            INSERT INTO production_expenses (record_id, expense_category, description, amount_php, date_logged)
-            VALUES (?, ?, ?, ?, ?);
-        """, expenses_to_insert)
-
-        # Synchronize parent total expenses
-        cursor.execute("""
-            UPDATE production_records
-            SET total_expenses_php = (
-                SELECT COALESCE(SUM(amount_php), 0.0)
-                FROM production_expenses
-                WHERE production_expenses.record_id = production_records.record_id
-            );
-        """)
-        conn.commit()
-        
-# --- SQLite Query Helpers (Strict ASC Ordering Enforced) ---
 
 def fetch_all_crops() -> List[Dict[str, Any]]:
-    """Retrieves all registered crops sorted by crop_id ASC."""
     with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM crops ORDER BY crop_id ASC;")
-        return [dict(row) for row in cursor.fetchall()]
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM crops ORDER BY crop_id ASC")
+            return cur.fetchall()
+
 
 def fetch_all_locations() -> List[Dict[str, Any]]:
-    """Retrieves all farm locations sorted by location_id ASC."""
     with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM locations ORDER BY location_id ASC;")
-        return [dict(row) for row in cursor.fetchall()]
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM locations ORDER BY location_id ASC")
+            return cur.fetchall()
+
 
 def fetch_joined_records(order_by: str = "record_id", order_dir: str = "ASC") -> List[Dict[str, Any]]:
-    """
-    Retrieves production records joined with crop and location metadata.
-    Supports dynamic field sorting (default: record_id ASC).
-    """
-    allowed_sort_fields = {
+    allowed = {
         "record_id": "p.record_id",
         "crop_name": "c.crop_name",
         "location_name": "l.location_name",
         "planting_date": "p.planting_date",
         "actual_yield_kg": "p.actual_yield_kg",
         "total_expenses_php": "p.total_expenses_php",
-        "status": "p.status"
+        "status": "p.status",
     }
-
-    sort_column = allowed_sort_fields.get(order_by, "p.record_id")
-    sort_direction = "DESC" if order_dir.upper() == "DESC" else "ASC"
-
+    sort_column = allowed.get(order_by, "p.record_id")
+    sort_direction = "DESC" if str(order_dir).upper() == "DESC" else "ASC"
     query = f"""
-        SELECT 
-            p.record_id,
-            c.crop_id,
-            c.crop_name,
-            c.category,
-            c.min_growth_days,
-            c.max_growth_days,
-            c.preferred_sub_season,
-            l.location_id,
-            l.location_name,
-            l.field_type,
-            l.area_hectares,
-            p.planting_date,
-            p.target_min_harvest_date,
-            p.target_max_harvest_date,
-            p.actual_harvest_date,
-            p.predicted_yield_kg,
-            p.actual_yield_kg,
-            p.yield_variance_pct,
-            p.total_expenses_php,
-            p.status,
-            p.is_historical
+        SELECT
+            p.record_id, c.crop_id, c.crop_name, c.category,
+            c.min_growth_days, c.max_growth_days, c.preferred_sub_season,
+            l.location_id, l.location_name, l.field_type, l.area_hectares,
+            p.planting_date::text AS planting_date,
+            p.target_min_harvest_date::text AS target_min_harvest_date,
+            p.target_max_harvest_date::text AS target_max_harvest_date,
+            p.actual_harvest_date::text AS actual_harvest_date,
+            p.predicted_yield_kg, p.actual_yield_kg, p.yield_variance_pct,
+            p.total_expenses_php, p.status, p.is_historical
         FROM production_records p
         JOIN crops c ON p.crop_id = c.crop_id
         JOIN locations l ON p.location_id = l.location_id
-        ORDER BY {sort_column} {sort_direction};
+        ORDER BY {sort_column} {sort_direction}
     """
     with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(query)
-        rows = cursor.fetchall()
-        return [dict(r) for r in rows]
+        with conn.cursor() as cur:
+            cur.execute(query)
+            return cur.fetchall()
+
+
+def fetch_joined_record_by_id(record_id: int) -> Optional[Dict[str, Any]]:
+    query = """
+        SELECT
+            p.record_id, c.crop_id, c.crop_name, c.category,
+            c.min_growth_days, c.max_growth_days, c.preferred_sub_season,
+            l.location_id, l.location_name, l.field_type, l.area_hectares,
+            p.planting_date::text AS planting_date,
+            p.target_min_harvest_date::text AS target_min_harvest_date,
+            p.target_max_harvest_date::text AS target_max_harvest_date,
+            p.actual_harvest_date::text AS actual_harvest_date,
+            p.predicted_yield_kg, p.actual_yield_kg, p.yield_variance_pct,
+            p.total_expenses_php, p.status, p.is_historical
+        FROM production_records p
+        JOIN crops c ON p.crop_id = c.crop_id
+        JOIN locations l ON p.location_id = l.location_id
+        WHERE p.record_id = %s
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, (record_id,))
+            return cur.fetchone()
+
 
 def count_production_records() -> int:
-    """Returns total count of production records for pagination math."""
     with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM production_records;")
-        return cursor.fetchone()[0]
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS count FROM production_records")
+            return cur.fetchone()["count"]
+
 
 def fetch_expenses_by_record(record_id: int) -> List[Dict[str, Any]]:
-    """Fetches itemized expenses linked to a specific production record ordered by expense_id ASC."""
     with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM production_expenses 
-            WHERE record_id = ? 
-            ORDER BY expense_id ASC;
-        """, (record_id,))
-        return [dict(row) for row in cursor.fetchall()]
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT expense_id, record_id, expense_category, description,
+                       amount_php, date_logged::text AS date_logged
+                FROM production_expenses
+                WHERE record_id = %s
+                ORDER BY expense_id ASC
+            """, (record_id,))
+            return cur.fetchall()
 
-def add_itemized_expense(record_id: int, category: str, description: str, amount_php: float, date_logged: str):
-    """Logs an expense line-item and automatically updates the record's total_expenses_php sum."""
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO production_expenses (record_id, expense_category, description, amount_php, date_logged)
-            VALUES (?, ?, ?, ?, ?);
-        """, (record_id, category, description, amount_php, date_logged))
 
-        # Recalculate and update parent total expenses
-        cursor.execute("""
+def _refresh_record_expenses_total(conn, record_id: int) -> None:
+    with conn.cursor() as cur:
+        cur.execute("""
             UPDATE production_records
             SET total_expenses_php = (
-                SELECT COALESCE(SUM(amount_php), 0.0)
+                SELECT COALESCE(SUM(amount_php), 0)
                 FROM production_expenses
-                WHERE record_id = ?
+                WHERE record_id = %s
             )
-            WHERE record_id = ?;
+            WHERE record_id = %s
         """, (record_id, record_id))
 
-        conn.commit()
-        
-def update_itemized_expense(expense_id: int, category: str, description: str, amount_php: float, date_logged: str) -> Optional[int]:
-    """
-    Updates an itemized expense line item and automatically recalculates 
-    the parent record's total_expenses_php. Returns the parent record_id.
-    """
+
+def add_itemized_expense(record_id: int, category: str, description: str,
+                         amount_php: float, date_logged: str):
     with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT record_id FROM production_expenses WHERE expense_id = ?;", (expense_id,))
-        row = cursor.fetchone()
-        if not row:
-            return None
-        record_id = row["record_id"]
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO production_expenses
+                    (record_id, expense_category, description, amount_php, date_logged)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (record_id, category, description, amount_php, date_logged))
+        _refresh_record_expenses_total(conn, record_id)
 
-        cursor.execute("""
-            UPDATE production_expenses
-            SET expense_category = ?, description = ?, amount_php = ?, date_logged = ?
-            WHERE expense_id = ?;
-        """, (category, description, amount_php, date_logged, expense_id))
 
-        # Automatically recalculate parent record total expenses
-        cursor.execute("""
-            UPDATE production_records
-            SET total_expenses_php = (
-                SELECT COALESCE(SUM(amount_php), 0.0)
-                FROM production_expenses
-                WHERE record_id = ?
+def update_itemized_expense(expense_id: int, category: str, description: str,
+                            amount_php: float, date_logged: str) -> Optional[int]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT record_id FROM production_expenses WHERE expense_id = %s",
+                (expense_id,),
             )
-            WHERE record_id = ?;
-        """, (record_id, record_id))
-
-        conn.commit()
+            row = cur.fetchone()
+            if row is None:
+                return None
+            record_id = row["record_id"]
+            cur.execute("""
+                UPDATE production_expenses
+                SET expense_category = %s, description = %s,
+                    amount_php = %s, date_logged = %s
+                WHERE expense_id = %s
+            """, (category, description, amount_php, date_logged, expense_id))
+        _refresh_record_expenses_total(conn, record_id)
         return record_id
 
 
 def delete_itemized_expense(expense_id: int) -> Optional[int]:
-    """
-    Deletes an itemized expense line item and automatically recalculates 
-    the parent record's total_expenses_php. Returns the parent record_id.
-    """
     with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT record_id FROM production_expenses WHERE expense_id = ?;", (expense_id,))
-        row = cursor.fetchone()
-        if not row:
-            return None
-        record_id = row["record_id"]
-
-        cursor.execute("DELETE FROM production_expenses WHERE expense_id = ?;", (expense_id,))
-
-        # Automatically recalculate parent record total expenses
-        cursor.execute("""
-            UPDATE production_records
-            SET total_expenses_php = (
-                SELECT COALESCE(SUM(amount_php), 0.0)
-                FROM production_expenses
-                WHERE record_id = ?
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT record_id FROM production_expenses WHERE expense_id = %s",
+                (expense_id,),
             )
-            WHERE record_id = ?;
-        """, (record_id, record_id))
-
-        conn.commit()
+            row = cur.fetchone()
+            if row is None:
+                return None
+            record_id = row["record_id"]
+            cur.execute("DELETE FROM production_expenses WHERE expense_id = %s", (expense_id,))
+        _refresh_record_expenses_total(conn, record_id)
         return record_id
-    
-def update_production_record(
-    record_id: int, 
-    crop_id: int, 
-    location_id: int, 
-    planting_date_str: str, 
-    target_min: str, 
-    target_max: str, 
-    predicted_yield_kg: float
-) -> bool:
-    """Updates core planting details of a production record and recalculates predictions."""
+
+
+def update_production_record(record_id: int, crop_id: int, location_id: int,
+                             planting_date_str: str, target_min: str,
+                             target_max: str, predicted_yield_kg: float) -> bool:
     with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE production_records
-            SET crop_id = ?,
-                location_id = ?,
-                planting_date = ?,
-                target_min_harvest_date = ?,
-                target_max_harvest_date = ?,
-                predicted_yield_kg = ?
-            WHERE record_id = ?;
-        """, (crop_id, location_id, planting_date_str, target_min, target_max, predicted_yield_kg, record_id))
-        conn.commit()
-        return cursor.rowcount > 0
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE production_records
+                SET crop_id = %s, location_id = %s, planting_date = %s,
+                    target_min_harvest_date = %s, target_max_harvest_date = %s,
+                    predicted_yield_kg = %s
+                WHERE record_id = %s
+            """, (crop_id, location_id, planting_date_str, target_min, target_max,
+                  predicted_yield_kg, record_id))
+            return cur.rowcount > 0
+
+
+def delete_production_record(record_id: int) -> bool:
+    """Delete a production record; its itemized expenses cascade automatically."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM production_records WHERE record_id = %s", (record_id,))
+            return cur.rowcount > 0
+
 
 def delete_crop_catalog_item(crop_id: int) -> Tuple[bool, str]:
-    """Deletes a crop variant only if it is not linked to any production records."""
     try:
         with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM crops WHERE crop_id = ?;", (crop_id,))
-            conn.commit()
-            if cursor.rowcount == 0:
-                return False, f"Crop ID #{crop_id} not found."
-            return True, f"Crop ID #{crop_id} deleted successfully."
-    except sqlite3.IntegrityError:
-        return False, f"Cannot delete Crop ID #{crop_id} because active or historical production records are referencing it."
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM crops WHERE crop_id = %s", (crop_id,))
+                if cur.rowcount == 0:
+                    return False, f"Crop ID #{crop_id} not found."
+        return True, f"Crop ID #{crop_id} deleted successfully."
+    except ForeignKeyViolation:
+        return False, f"Cannot delete Crop ID #{crop_id} because production records reference it."
+
 
 def delete_location_catalog_item(location_id: int) -> Tuple[bool, str]:
-    """Deletes a farm plot location only if it is not linked to any production records."""
     try:
         with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM locations WHERE location_id = ?;", (location_id,))
-            conn.commit()
-            if cursor.rowcount == 0:
-                return False, f"Location ID #{location_id} not found."
-            return True, f"Location ID #{location_id} deleted successfully."
-    except sqlite3.IntegrityError:
-        return False, f"Cannot delete Location ID #{location_id} because active or historical production records are referencing it."
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM locations WHERE location_id = %s", (location_id,))
+                if cur.rowcount == 0:
+                    return False, f"Location ID #{location_id} not found."
+        return True, f"Location ID #{location_id} deleted successfully."
+    except ForeignKeyViolation:
+        return False, f"Cannot delete Location ID #{location_id} because production records reference it."

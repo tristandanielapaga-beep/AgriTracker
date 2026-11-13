@@ -1,4 +1,4 @@
-import sqlite3
+import psycopg
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Tuple, Optional
 from generate_synthetic_data import calculate_season_overlap_ratio
@@ -192,12 +192,12 @@ def add_crop_type(crop_name: str, category: str, min_growth_days: int, max_growt
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO crops (crop_name, category, min_growth_days, max_growth_days, preferred_sub_season)
-                VALUES (?, ?, ?, ?, ?);
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING crop_id
             """, (crop_name.strip(), category.strip(), int(min_growth_days), int(max_growth_days), preferred_sub_season.strip()))
-            conn.commit()
-            new_id = cursor.lastrowid
+            new_id = cursor.fetchone()["crop_id"]
         return {"success": True, "message": f"Crop '{crop_name}' registered successfully.", "crop_id": new_id}
-    except sqlite3.IntegrityError:
+    except psycopg.errors.UniqueViolation:
         return {"success": False, "message": f"Crop name '{crop_name}' already exists in catalog."}
 
 def add_farm_location(location_name: str, field_type: str, area_hectares: float) -> Dict[str, Any]:
@@ -212,12 +212,12 @@ def add_farm_location(location_name: str, field_type: str, area_hectares: float)
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO locations (location_name, field_type, area_hectares)
-                VALUES (?, ?, ?);
+                VALUES (%s, %s, %s)
+                RETURNING location_id
             """, (location_name.strip(), field_type.strip(), float(area_hectares)))
-            conn.commit()
-            new_id = cursor.lastrowid
+            new_id = cursor.fetchone()["location_id"]
         return {"success": True, "message": f"Location '{location_name}' registered successfully.", "location_id": new_id}
-    except sqlite3.IntegrityError:
+    except psycopg.errors.UniqueViolation:
         return {"success": False, "message": f"Location '{location_name}' already exists."}
 
 def create_planting_operation(
@@ -282,11 +282,10 @@ def create_planting_operation(
             INSERT INTO production_records (
                 crop_id, location_id, planting_date, target_min_harvest_date, target_max_harvest_date,
                 predicted_yield_kg, actual_yield_kg, yield_variance_pct, total_expenses_php, status, is_historical
-            ) VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, 0.0, 'In Progress', 0);
+            ) VALUES (%s, %s, %s, %s, %s, %s, 0.0, 0.0, 0.0, 'In Progress', 0)
+            RETURNING record_id
         """, (crop_id, location_id, planting_date_str.strip(), target_min, target_max, predicted_yield_kg))
-        
-        record_id = cursor.lastrowid
-        conn.commit()
+        record_id = cursor.fetchone()["record_id"]
 
     # Log initial seed/planting budget expense if specified
     if initial_budget_php > 0:
@@ -322,11 +321,9 @@ def record_harvest_completion(record_id: int, actual_harvest_date_str: str, actu
     if not validate_non_negative_number(actual_yield_kg):
         return {"success": False, "message": "Actual harvest weight must be non-negative (>= 0)."}
 
-    records = {r["record_id"]: r for r in db.fetch_joined_records()}
-    if record_id not in records:
+    record = db.fetch_joined_record_by_id(record_id)
+    if record is None:
         return {"success": False, "message": f"Production Record ID #{record_id} not found."}
-
-    record = records[record_id]
     
     if not validate_harvest_after_planting(record["planting_date"], actual_harvest_date_str):
         return {"success": False, "message": f"Harvest date ({actual_harvest_date_str}) cannot precede planting date ({record['planting_date']})."}
@@ -339,18 +336,17 @@ def record_harvest_completion(record_id: int, actual_harvest_date_str: str, actu
         actual_harvest_date_str, record["target_min_harvest_date"], record["target_max_harvest_date"]
     )
 
-    # Commit update to SQLite
+    # PostgreSQL update; DATE columns accept YYYY-MM-DD strings.
     with db.get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE production_records
-            SET actual_harvest_date = ?,
-                actual_yield_kg = ?,
-                yield_variance_pct = ?,
-                status = 'Completed'
-            WHERE record_id = ?;
-        """, (actual_harvest_date_str.strip(), float(actual_yield_kg), variance_pct, record_id))
-        conn.commit()
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                UPDATE production_records
+                SET actual_harvest_date = %s,
+                    actual_yield_kg = %s,
+                    yield_variance_pct = %s,
+                    status = 'Completed'
+                WHERE record_id = %s
+            """, (actual_harvest_date_str.strip(), float(actual_yield_kg), variance_pct, record_id))
 
     variance_sign = "+" if variance_pct > 0 else ""
     return {
@@ -422,8 +418,7 @@ def edit_planting_operation(record_id: int, new_crop_id: int, new_location_id: i
     )
 
     # Fetch active total expenses to estimate budget per hectare
-    existing_records = {r['record_id']: r for r in db.fetch_joined_records()}
-    existing_rec = existing_records.get(record_id)
+    existing_rec = db.fetch_joined_record_by_id(record_id)
     total_exp = existing_rec['total_expenses_php'] if existing_rec else 0.0
     
     budget_per_ha = (total_exp / loc["area_hectares"]) if total_exp > 0 else 25000.0
