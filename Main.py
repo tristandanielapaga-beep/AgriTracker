@@ -1,10 +1,22 @@
 import os
 import sys
+from getpass import getpass
 from typing import List, Dict, Any
 
 import database as db
 import functions as fn
 import analytics as an
+import auth
+
+
+CURRENT_USER = None
+
+
+def current_user_id() -> int:
+    """Return the ID belonging to the currently authenticated session."""
+    if CURRENT_USER is None:
+        raise RuntimeError("No authenticated user session is active.")
+    return CURRENT_USER["user_id"]
 
 
 def clear_screen():
@@ -43,69 +55,156 @@ def render_ledger_table(items: List[Dict[str, Any]], current_page: int, total_pa
     print("=" * 115)
 
 
+
 def edit_record_workflow():
-    """Interactive workflow for editing planting metadata of existing operations."""
+    """Edit planting metadata with status-aware record selection."""
     clear_screen()
     print_header("Edit Production Record Metadata")
 
-    all_records = db.fetch_joined_records()
-    records_dict = {r['record_id']: r for r in all_records}
-
-    if not all_records:
-        print("[!] No records available to edit.")
-        input("Press Enter to return...")
-        return
-
     try:
-        rec_id = int(input("Enter Production Record ID to Edit: ").strip())
-    except ValueError:
-        print("[!] Invalid Record ID.")
-        input("Press Enter to return...")
-        return
+        all_records = db.fetch_joined_records(current_user_id())
 
-    if rec_id not in records_dict:
-        print(f"[!] Record ID #{rec_id} not found.")
-        input("Press Enter to return...")
-        return
+        # Staff can only edit their own records that are In Progress.
+        if CURRENT_USER.get("role") == "staff":
+            editable_records = [
+                r for r in all_records
+                if str(r.get("status", "")).strip().lower() == "in progress"
+            ]
+        else:
+            # Preserve the admin's ability to access all records.
+            editable_records = all_records
 
-    target = records_dict[rec_id]
-    print(f"\nEditing Record #{rec_id} (Current Crop: {target['crop_name']} | Location: {target['location_name']} | Planted: {target['planting_date']}):")
+        if not editable_records:
+            print("[!] No records available to edit.")
+            input("\nPress Enter to return...")
+            return
 
-    crops = db.fetch_all_crops()
-    locations = db.fetch_all_locations()
+        print("\nAVAILABLE RECORDS:")
+        print("-" * 90)
 
-    print("\nAVAILABLE CROPS:")
-    for c in crops:
-        print(f"  [{c['crop_id']}] {c['crop_name']} ({c['category']})")
-    try:
-        crop_id_input = input(f"Select Crop ID [Current: {target['crop_id']}]: ").strip()
-        new_crop_id = int(crop_id_input) if crop_id_input else target['crop_id']
-    except ValueError:
-        print("[!] Invalid Crop Selection.")
-        input("Press Enter to return...")
-        return
+        for number, record in enumerate(editable_records, start=1):
+            print(
+                f"[{number}] Record #{record['record_id']} | "
+                f"{record['crop_name']} | "
+                f"{record['location_name']} | "
+                f"Planted: {record['planting_date']} | "
+                f"Status: {record['status']}"
+            )
 
-    print("\nAVAILABLE LOCATIONS:")
-    for l in locations:
-        print(f"  [{l['location_id']}] {l['location_name']} ({l['area_hectares']} ha)")
-    try:
-        loc_id_input = input(f"Select Location ID [Current: {target['location_id']}]: ").strip()
-        new_loc_id = int(loc_id_input) if loc_id_input else target['location_id']
-    except ValueError:
-        print("[!] Invalid Location Selection.")
-        input("Press Enter to return...")
-        return
+        print("-" * 90)
 
-    new_date = input(f"Enter Planting Date YYYY-MM-DD [Current: {target['planting_date']}]: ").strip() or target['planting_date']
+        selection = input(
+            f"\nSelect record number (1-{len(editable_records)}) "
+            "or B to cancel: "
+        ).strip().lower()
 
-    res = fn.edit_planting_operation(rec_id, new_crop_id, new_loc_id, new_date)
+        if selection == "b":
+            return
 
-    if res["success"]:
-        print(f"\n[+] SUCCESS: {res['message']}")
-    else:
-        print(f"\n[!] UPDATE FAILED: {res['message']}")
+        try:
+            selected_number = int(selection)
 
-    input("\nPress Enter to return to main menu...")
+            if not 1 <= selected_number <= len(editable_records):
+                print("[!] Invalid selection.")
+                input("Press Enter to return...")
+                return
+
+        except ValueError:
+            print("[!] Please enter a valid number.")
+            input("Press Enter to return...")
+            return
+
+        target = editable_records[selected_number - 1]
+        rec_id = target["record_id"]
+
+        print(
+            f"\nEditing Record #{rec_id} "
+            f"(Current Crop: {target['crop_name']} | "
+            f"Location: {target['location_name']} | "
+            f"Planted: {target['planting_date']} | "
+            f"Status: {target['status']}):"
+        )
+
+        crops = db.fetch_all_crops()
+        locations = db.fetch_all_locations()
+
+        print("\nAVAILABLE CROPS:")
+        for c in crops:
+            print(
+                f"  [{c['crop_id']}] "
+                f"{c['crop_name']} ({c['category']})"
+            )
+
+        try:
+            crop_id_input = input(
+                f"Select Crop ID [Current: {target['crop_id']}]: "
+            ).strip()
+
+            new_crop_id = (
+                int(crop_id_input)
+                if crop_id_input
+                else target["crop_id"]
+            )
+
+        except ValueError:
+            print("[!] Invalid Crop Selection.")
+            input("Press Enter to return...")
+            return
+
+        print("\nAVAILABLE LOCATIONS:")
+        for location in locations:
+            print(
+                f"  [{location['location_id']}] "
+                f"{location['location_name']} "
+                f"({location['area_hectares']} ha)"
+            )
+
+        try:
+            loc_id_input = input(
+                f"Select Location ID [Current: {target['location_id']}]: "
+            ).strip()
+
+            new_loc_id = (
+                int(loc_id_input)
+                if loc_id_input
+                else target["location_id"]
+            )
+
+        except ValueError:
+            print("[!] Invalid Location Selection.")
+            input("Press Enter to return...")
+            return
+
+        new_date = input(
+            f"Enter Planting Date YYYY-MM-DD "
+            f"[Current: {target['planting_date']}]: "
+        ).strip() or target["planting_date"]
+
+        try:
+            res = fn.edit_planting_operation(
+                rec_id,
+                new_crop_id,
+                new_loc_id,
+                new_date,
+                current_user_id()
+            )
+
+            if res["success"]:
+                print(f"\n[+] SUCCESS: {res['message']}")
+            else:
+                print(f"\n[!] UPDATE FAILED: {res['message']}")
+
+        except PermissionError as error:
+            print(f"\n[!] PERMISSION DENIED: {error}")
+
+        except Exception as error:
+            print(f"\n[!] UPDATE FAILED: {error}")
+
+    except Exception as error:
+        print(f"\n[!] Could not retrieve production records: {error}")
+
+    input("\nPress Enter to return to the menu...")
+
 
 
 def view_ledger_workflow():
@@ -119,7 +218,7 @@ def view_ledger_workflow():
     while True:
         clear_screen()
         # Fetch records sorted by active sort field
-        all_records = db.fetch_joined_records(order_by=current_sort_field, order_dir=current_sort_dir)
+        all_records = db.fetch_joined_records(current_user_id(), order_by=current_sort_field, order_dir=current_sort_dir)
         
         # Apply active inline search filter
         if search_keyword:
@@ -189,7 +288,7 @@ def view_ledger_workflow():
 
 def inspect_record_details(record_id: int):
     """Displays full agronomic, seasonality, and expense details for a specific record."""
-    records = {r["record_id"]: r for r in db.fetch_joined_records()}
+    records = {r["record_id"]: r for r in db.fetch_joined_records(current_user_id())}
     if record_id not in records:
         print(f"\n[!] Record ID #{record_id} does not exist.")
         return
@@ -198,7 +297,7 @@ def inspect_record_details(record_id: int):
     overlap_ratio, season_tag = fn.compute_pagasa_overlap(
         r["planting_date"], r["min_growth_days"], r["preferred_sub_season"]
     )
-    expenses = db.fetch_expenses_by_record(record_id)
+    expenses = db.fetch_expenses_by_record(record_id, current_user_id())
 
     print("\n" + "=" * 75)
     print(f"               DETAILED OPERATIONAL RECORD INSPECTOR (ID #{record_id})")
@@ -226,74 +325,6 @@ def inspect_record_details(record_id: int):
     print("=" * 75)
 
 
-def search_records_workflow():
-    """Interactive paginated search and filter workflow for production records."""
-    clear_screen()
-    print_header("Search & Filter Production Records")
-
-    print("[1] Filter by Year")
-    print("[2] Filter by Crop Category")
-    print("[3] Search by Crop Name or Location Name")
-    print("[4] Back to Main Menu")
-
-    choice = input("\nSelect filter type (1-4): ").strip()
-    all_records = db.fetch_joined_records()
-    filtered = []
-
-    if choice == '1':
-        year_str = input("Enter Year (e.g., 2024, 2025, 2026): ").strip()
-        filtered = [r for r in all_records if r['planting_date'].startswith(year_str)]
-    elif choice == '2':
-        cat_str = input("Enter Category (Grains, Vegetables, Fruits, Root Crops / Tubers, Legumes / Pulses): ").strip().lower()
-        filtered = [r for r in all_records if cat_str in r['category'].lower()]
-    elif choice == '3':
-        kw = input("Enter search keyword (Crop or Location): ").strip().lower()
-        filtered = [r for r in all_records if kw in r['crop_name'].lower() or kw in r['location_name'].lower()]
-    elif choice == '4':
-        return
-    else:
-        print("\n[!] Invalid selection.")
-        input("Press Enter...")
-        return
-
-    # Clean paginated loop for the pre-filtered results subset
-    current_page = 1
-    page_size = 10
-
-    while True:
-        clear_screen()
-        pagination = fn.paginate_records(filtered, page=current_page, page_size=page_size)
-
-        render_ledger_table(
-            items=pagination["items"],
-            current_page=pagination["current_page"],
-            total_pages=pagination["total_pages"],
-            total_records=pagination["total_records"]
-        )
-
-        print("\nNavigation: [N]ext | [P]rev | [J]ump Page | [I]nspect Record | [B]ack to Search Menu")
-        sub_choice = input("Select option: ").strip().lower()
-
-        if sub_choice == 'n':
-            if current_page < pagination["total_pages"]:
-                current_page += 1
-        elif sub_choice == 'p':
-            if current_page > 1:
-                current_page -= 1
-        elif sub_choice == 'j':
-            try:
-                target_p = int(input(f"Enter Page Number (1-{pagination['total_pages']}): ").strip())
-                if 1 <= target_p <= pagination["total_pages"]:
-                    current_page = target_p
-            except ValueError:
-                pass
-        elif sub_choice == 'i':
-            rec_id_str = input("\nEnter Record ID to inspect: ").strip()
-            if rec_id_str.isdigit():
-                inspect_record_details(int(rec_id_str))
-                input("\nPress Enter to return...")
-        elif sub_choice == 'b':
-            break
 
 
 def log_planting_workflow():
@@ -344,6 +375,7 @@ def log_planting_workflow():
         crop_id=crop_id,
         location_id=location_id,
         planting_date_str=planting_date,
+        user_id=current_user_id(),
         initial_budget_php=budget
     )
 
@@ -365,7 +397,7 @@ def log_harvest_workflow():
     while True:
         clear_screen()
         # Fetch records, optionally filtering specifically for 'In Progress' active records or all
-        all_records = db.fetch_joined_records(order_by=current_sort_field, order_dir=current_sort_dir)
+        all_records = db.fetch_joined_records(current_user_id(), order_by=current_sort_field, order_dir=current_sort_dir)
 
         # Apply active inline keyword filter
         if search_keyword:
@@ -429,7 +461,7 @@ def log_harvest_workflow():
             current_page = 1
         elif choice.isdigit():
             rec_id = int(choice)
-            target = db.fetch_joined_record_by_id(rec_id)
+            target = db.fetch_joined_record_by_id(rec_id, current_user_id())
             if target is not None:
                 print(f"\nSelected Record #{rec_id}: {target['crop_name']} at {target['location_name']}")
                 print(f"Current Status: {target['status']} | Predicted Yield: {target['predicted_yield_kg']:,.2f} kg")
@@ -439,7 +471,7 @@ def log_harvest_workflow():
                 
                 if fn.validate_non_negative_number(actual_yield_str):
                     actual_yield = float(actual_yield_str)
-                    result = fn.record_harvest_completion(rec_id, actual_date_str, actual_yield)
+                    result = fn.record_harvest_completion(rec_id, actual_date_str, actual_yield, current_user_id())
                     print(f"[+] {result['message']}" if result["success"] else f"[!] {result['message']}")
                 else:
                     print("[!] Invalid yield amount entered.")
@@ -461,7 +493,7 @@ def manage_expenses_workflow():
 
     while True:
         clear_screen()
-        all_records = db.fetch_joined_records(order_by=current_sort_field, order_dir=current_sort_dir)
+        all_records = db.fetch_joined_records(current_user_id(), order_by=current_sort_field, order_dir=current_sort_dir)
 
         # Apply active inline keyword filter
         if search_keyword:
@@ -524,7 +556,7 @@ def manage_expenses_workflow():
             current_page = 1
         elif choice.isdigit():
             rec_id = int(choice)
-            records_dict = {r['record_id']: r for r in db.fetch_joined_records()}
+            records_dict = {r['record_id']: r for r in db.fetch_joined_records(current_user_id())}
             if rec_id in records_dict:
                 _run_expense_item_manager(rec_id)
             else:
@@ -537,8 +569,8 @@ def _run_expense_item_manager(rec_id: int):
     """Sub-loop for managing expense line items for a specific record."""
     while True:
         clear_screen()
-        target_rec = {r['record_id']: r for r in db.fetch_joined_records()}[rec_id]
-        expenses = db.fetch_expenses_by_record(rec_id)
+        target_rec = {r['record_id']: r for r in db.fetch_joined_records(current_user_id())}[rec_id]
+        expenses = db.fetch_expenses_by_record(rec_id, current_user_id())
 
         print_header(f"Expense Log Manager for Record #{rec_id} ({target_rec['crop_name']})")
         print(f" Farm Location: {target_rec['location_name']} | Planting Date: {target_rec['planting_date']}")
@@ -593,7 +625,7 @@ def _run_expense_item_manager(rec_id: int):
                 input("Press Enter...")
                 continue
 
-            db.add_itemized_expense(rec_id, selected_cat, desc, float(amount_str), date_str)
+            db.add_itemized_expense(rec_id, selected_cat, desc, float(amount_str), date_str, current_user_id())
             print("[+] Expense line item added successfully!")
             input("Press Enter...")
 
@@ -630,7 +662,7 @@ def _run_expense_item_manager(rec_id: int):
             amount = float(amount_str) if amount_str and fn.validate_positive_number(amount_str) else target_exp['amount_php']
             date_str = input(f"Enter Date [Current: {target_exp['date_logged']}]: ").strip() or target_exp['date_logged']
 
-            db.update_itemized_expense(exp_id, selected_cat, desc, amount, date_str)
+            db.update_itemized_expense(exp_id, selected_cat, desc, amount, date_str, current_user_id())
             print(f"[+] Expense #{exp_id} updated successfully!")
             input("Press Enter...")
 
@@ -647,7 +679,7 @@ def _run_expense_item_manager(rec_id: int):
                 continue
 
             if input(f"Confirm deletion of Expense #{exp_id}? (y/n): ").strip().lower() == 'y':
-                db.delete_itemized_expense(exp_id)
+                db.delete_itemized_expense(exp_id, current_user_id())
                 print(f"[+] Expense #{exp_id} deleted.")
                 input("Press Enter...")
 
@@ -664,7 +696,7 @@ def delete_record_workflow():
 
     while True:
         clear_screen()
-        all_records = db.fetch_joined_records(order_by=current_sort_field, order_dir=current_sort_dir)
+        all_records = db.fetch_joined_records(current_user_id(), order_by=current_sort_field, order_dir=current_sort_dir)
 
         # Apply active inline keyword filter
         if search_keyword:
@@ -728,11 +760,11 @@ def delete_record_workflow():
             current_page = 1
         elif choice.isdigit():
             rec_id = int(choice)
-            target = db.fetch_joined_record_by_id(rec_id)
+            target = db.fetch_joined_record_by_id(rec_id, current_user_id())
             if target is not None:
                 confirm = input(f"Are you sure you want to delete Record #{rec_id} ({target['crop_name']} at {target['location_name']})? This will also remove child expenses. (y/n): ").strip().lower()
                 if confirm == 'y':
-                    if db.delete_production_record(rec_id):
+                    if db.delete_production_record(rec_id, current_user_id()):
                         print(f"[+] Record #{rec_id} deleted successfully.")
                     else:
                         print(f"[!] Record #{rec_id} could not be deleted.")
@@ -783,7 +815,7 @@ def register_crop_workflow():
         input("Press Enter to return...")
         return
 
-    res = fn.add_crop_type(crop_name, selected_cat, min_days, max_days, selected_sub_season)
+    res = fn.add_crop_type(crop_name, selected_cat, min_days, max_days, selected_sub_season, current_user_id())
     if res["success"]:
         print(f"\n[+] SUCCESS: {res['message']}")
     else:
@@ -816,7 +848,7 @@ def register_location_workflow():
         input("Press Enter to return...")
         return
 
-    res = fn.add_farm_location(loc_name, selected_field, float(area_str))
+    res = fn.add_farm_location(loc_name, selected_field, float(area_str), current_user_id())
     if res["success"]:
         print(f"\n[+] SUCCESS: {res['message']}")
     else:
@@ -850,54 +882,480 @@ def analytics_and_charts_workflow():
         input("\nPress Enter to continue...")
 
 
-def main():
-    """Program Entry Point: Initializes DB and runs main menu loop."""
-    db.init_db()
+
+def login_workflow():
+    """Authenticate an active account before entering the application."""
+    while True:
+        clear_screen()
+        print_header("Agricultural Production Tracker - Login")
+        username = input("Username: ").strip()
+        password = getpass("Password: ")
+        try:
+            user = auth.authenticate_user(username, password)
+            if user is not None:
+                print(f"\n[+] Welcome, {user['full_name']} ({user['role'].upper()})!")
+                input("Press Enter to continue...")
+                return user
+            print("\n[!] Invalid username/password, or the account is inactive.")
+        except Exception as error:
+            print(f"\n[!] Login error: {error}")
+        print("\n[1] Try again\n[2] Exit")
+        if input("Choose: ").strip() == "2":
+            return None
+
+
+def submit_crop_request_workflow():
+    clear_screen()
+    print_header("Submit Crop Catalog Request")
+    crop_name = input("Crop name: ").strip()
+    categories = ['Grains', 'Vegetables', 'Fruits', 'Root Crops / Tubers', 'Legumes / Pulses']
+    for i, value in enumerate(categories, 1):
+        print(f"[{i}] {value}")
+    try:
+        category = categories[int(input("Category: ").strip()) - 1]
+        min_days = int(input("Minimum growth days: ").strip())
+        max_days = int(input("Maximum growth days: ").strip())
+        seasons = ['Cool Dry', 'Hot Dry', 'Wet', 'Year-Round']
+        for i, value in enumerate(seasons, 1):
+            print(f"[{i}] {value}")
+        season = seasons[int(input("Preferred sub-season: ").strip()) - 1]
+    except (ValueError, IndexError):
+        print("[!] Invalid selection or number.")
+        input("Press Enter...")
+        return
+    result = fn.request_crop_type(crop_name, category, min_days, max_days, season, current_user_id())
+    print(("[+] " if result['success'] else "[!] ") + result['message'])
+    input("Press Enter...")
+
+
+def submit_location_request_workflow():
+    clear_screen()
+    print_header("Submit Farm Location Request")
+    name = input("Location/plot name: ").strip()
+    field_types = ['Irrigated Lowland', 'Rainfed Upland', 'Greenhouse/Controlled']
+    for i, value in enumerate(field_types, 1):
+        print(f"[{i}] {value}")
+    try:
+        field_type = field_types[int(input("Field type: ").strip()) - 1]
+        area = float(input("Area in hectares: ").strip())
+    except (ValueError, IndexError):
+        print("[!] Invalid selection or area.")
+        input("Press Enter...")
+        return
+    result = fn.request_farm_location(name, field_type, area, current_user_id())
+    print(("[+] " if result['success'] else "[!] ") + result['message'])
+    input("Press Enter...")
+
+
+def user_management_workflow():
+    """Admin-only account creation and activation/deactivation."""
+    while True:
+        clear_screen()
+        print_header("User Account Management")
+        users = db.fetch_all_users(current_user_id())
+        print(f"{'ID':<5} {'Username':<22} {'Full name':<28} {'Role':<10} {'Status'}")
+        print("-" * 85)
+        for user in users:
+            status = "Active" if user['is_active'] else "Inactive"
+            print(f"{user['user_id']:<5} {user['username']:<22} {user['full_name']:<28} {user['role']:<10} {status}")
+        print("\n[A] Create staff account | [T] Toggle account status | [B] Back")
+        choice = input("Choose: ").strip().lower()
+        if choice == 'a':
+            username = input("New username: ").strip()
+            full_name = input("Full name: ").strip()
+            password = getpass("Temporary password (minimum 12 characters): ")
+            confirm = getpass("Confirm password: ")
+            if password != confirm:
+                print("[!] Passwords do not match.")
+            elif len(password) < 12 or len(password.encode('utf-8')) > 72:
+                print("[!] Password must be at least 12 characters and at most 72 UTF-8 bytes.")
+            else:
+                try:
+                    new_id = db.create_user(username, auth.hash_password(password), full_name, 'staff', current_user_id())
+                    print(f"[+] Staff account created. User ID: {new_id}")
+                except Exception as error:
+                    print(f"[!] Could not create account: {error}")
+            input("Press Enter...")
+        elif choice == 't':
+            try:
+                target_id = int(input("User ID: ").strip())
+                target = db.fetch_user_by_id(target_id, current_user_id())
+                if target is None:
+                    print("[!] User not found.")
+                else:
+                    new_status = not bool(target['is_active'])
+                    db.set_user_active_status(target_id, new_status, current_user_id())
+                    print(f"[+] Account {target['username']} is now {'active' if new_status else 'inactive'}.")
+            except Exception as error:
+                print(f"[!] Could not change account status: {error}")
+            input("Press Enter...")
+        elif choice == 'b':
+            return
+
+
+
+def review_requests_workflow():
+    """Admin-only, category-based review of staff requests."""
 
     while True:
         clear_screen()
-        print("=" * 85)
-        print("           AGRICULTURAL PRODUCTION TRACKER & YIELD PREDICTION SYSTEM")
-        print("                 DSA 214 - Programming for Data Science Project")
-        print("=" * 85)
-        print("  [1] View Production Ledger (Paginated Ledger)")
-        print("  [2] Search / Filter Production Records")
-        print("  [3] Log New Planting Operation (With ML Yield Prediction)")
-        print("  [4] Log Harvest Output (Complete Active Record)")
-        print("  [5] Manage Production Expenses")
-        print("  [6] Register New Crop Variety")
-        print("  [7] Register New Farm Location Plot")
-        print("  [8] Delete Production Record")
-        print("  [9] View Executive Analytics & Generate Charts")
-        print(" [10] Exit System")
-        print("=" * 85)
+        print_header("Review Staff Requests")
 
-        choice = input("Select an option (1-10): ").strip()
+        try:
+            crop_requests = db.fetch_crop_requests(
+                current_user_id(), 'Pending'
+            )
+            location_requests = db.fetch_location_requests(
+                current_user_id(), 'Pending'
+            )
 
-        if choice == '1':
-            view_ledger_workflow()
-        elif choice == '2':
-            search_records_workflow()
-        elif choice == '3':
-            log_planting_workflow()
-        elif choice == '4':
-            log_harvest_workflow()
-        elif choice == '5':
-            manage_expenses_workflow()
-        elif choice == '6':
-            register_crop_workflow()
-        elif choice == '7':
-            register_location_workflow()
-        elif choice == '8':
-            delete_record_workflow()
-        elif choice == '9':
-            analytics_and_charts_workflow()
-        elif choice == '10':
-            print("\n[+] Exiting Agricultural Tracker System safely. Goodbye!")
-            sys.exit(0)
-        else:
-            print("\n[!] Invalid choice. Please enter a number from 1 to 10.")
-            input("Press Enter to continue...")
+            print("\nPENDING REQUEST COUNTS")
+            print("-" * 55)
+            print(f"  [1] Crop Requests       ({len(crop_requests)} pending)")
+            print(f"  [2] Location Requests   ({len(location_requests)} pending)")
+            print("-" * 55)
+            print("\n[B] Back")
+
+            choice = input("\nChoose category: ").strip().lower()
+
+            if choice == 'b':
+                return
+
+            if choice not in ('1', '2'):
+                print("[!] Invalid selection.")
+                input("Press Enter...")
+                continue
+
+            is_crop = choice == '1'
+            requests = crop_requests if is_crop else location_requests
+            category_name = "Crop" if is_crop else "Location"
+
+            # Display selected category's requests.
+            while True:
+                clear_screen()
+                print_header(f"Pending {category_name} Requests")
+
+                if not requests:
+                    print(f"\nNo pending {category_name.lower()} requests.")
+                    input("\nPress Enter to return to categories...")
+                    break
+
+                if is_crop:
+                    print(
+                        f"\n{'ID':<6} {'CROP NAME':<20} "
+                        f"{'CATEGORY':<25} {'GROWTH':<12} {'SEASON'}"
+                    )
+                    print("-" * 90)
+
+                    for item in requests:
+                        growth = (
+                            f"{item['min_growth_days']}-"
+                            f"{item['max_growth_days']} days"
+                        )
+                        print(
+                            f"{item['request_id']:<6} "
+                            f"{item['crop_name']:<20} "
+                            f"{item['category']:<25} "
+                            f"{growth:<12} "
+                            f"{item['preferred_sub_season']}"
+                        )
+
+                else:
+                    print(
+                        f"\n{'ID':<6} {'LOCATION NAME':<30} "
+                        f"{'FIELD TYPE':<25} {'AREA (HA)'}"
+                    )
+                    print("-" * 85)
+
+                    for item in requests:
+                        print(
+                            f"{item['request_id']:<6} "
+                            f"{item['location_name']:<30} "
+                            f"{item['field_type']:<25} "
+                            f"{item['area_hectares']}"
+                        )
+
+                print("-" * 85)
+                print("\nEnter a Request ID to review.")
+                print("[B] Back to Categories")
+
+                selection = input("\nSelect request: ").strip().lower()
+
+                if selection == 'b':
+                    break
+
+                try:
+                    request_id = int(selection)
+                except ValueError:
+                    print("[!] Enter a valid Request ID.")
+                    input("Press Enter...")
+                    continue
+
+                target = next(
+                    (
+                        item for item in requests
+                        if item['request_id'] == request_id
+                    ),
+                    None
+                )
+
+                if target is None:
+                    print("[!] Request ID not found in this list.")
+                    input("Press Enter...")
+                    continue
+
+                # Dedicated request review screen.
+                clear_screen()
+                print_header(f"Review {category_name} Request #{request_id}")
+
+                if is_crop:
+                    print(f"Crop Name:        {target['crop_name']}")
+                    print(f"Category:         {target['category']}")
+                    print(
+                        f"Growth Period:    "
+                        f"{target['min_growth_days']}-"
+                        f"{target['max_growth_days']} days"
+                    )
+                    print(
+                        f"Preferred Season: "
+                        f"{target['preferred_sub_season']}"
+                    )
+                else:
+                    print(f"Location Name:    {target['location_name']}")
+                    print(f"Field Type:       {target['field_type']}")
+                    print(f"Area:             {target['area_hectares']} ha")
+
+                print("\n[A] Approve | [R] Reject | [B] Back")
+
+                decision_input = input("\nChoose action: ").strip().lower()
+
+                if decision_input == 'b':
+                    continue
+
+                if decision_input not in ('a', 'r'):
+                    print("[!] Invalid decision.")
+                    input("Press Enter...")
+                    continue
+
+                decision = (
+                    'Approved' if decision_input == 'a' else 'Rejected'
+                )
+
+                reason = None
+                if decision == 'Rejected':
+                    reason = input(
+                        "Enter rejection reason: "
+                    ).strip()
+
+                    if not reason:
+                        print("[!] Rejection reason is required.")
+                        input("Press Enter...")
+                        continue
+
+                try:
+                    if is_crop:
+                        ok = db.review_crop_request(
+                            request_id,
+                            current_user_id(),
+                            decision,
+                            reason
+                        )
+                    else:
+                        ok = db.review_location_request(
+                            request_id,
+                            current_user_id(),
+                            decision,
+                            reason
+                        )
+
+                    if ok:
+                        print(f"\n[+] Request #{request_id} {decision.lower()}.")
+
+                        # Remove the reviewed request from the current list.
+                        requests = [
+                            item for item in requests
+                            if item['request_id'] != request_id
+                        ]
+                    else:
+                        print("[!] Request not found or already reviewed.")
+
+                except Exception as error:
+                    print(f"[!] Could not review request: {error}")
+
+                input("\nPress Enter to continue...")
+
+        except Exception as error:
+            print(f"\n[!] Could not retrieve staff requests: {error}")
+            input("\nPress Enter to return...")
+
+
+
+def audit_logs_workflow():
+    """Interactive paginated audit log."""
+    current_page = 1
+    page_size = 10
+    log_limit = 100
+
+    while True:
+        clear_screen()
+        print_header("Audit Log")
+
+        try:
+            logs = db.fetch_audit_logs(
+                current_user_id(),
+                limit=log_limit
+            )
+
+            if not logs:
+                print("No audit events found.")
+                print("\nNavigation: [R]efresh | [B]ack")
+                choice = input("Select option: ").strip().lower()
+
+                if choice == 'r':
+                    continue
+                elif choice == 'b':
+                    break
+                else:
+                    continue
+
+            pagination = fn.paginate_records(
+                logs,
+                page=current_page,
+                page_size=page_size
+            )
+
+            current_page = pagination["current_page"]
+
+            for item in pagination["items"]:
+                print(
+                    f"#{item['log_id']} | {item['created_at']} | "
+                    f"User: {item['username'] or 'Deleted account'} | "
+                    f"{item['action']} | "
+                    f"{item['target_table']} #{item['target_id']} | "
+                    f"{item['details']}"
+                )
+
+            print(
+                f"\nPage {pagination['current_page']} "
+                f"of {pagination['total_pages']} "
+                f"| Total Events: {pagination['total_records']}"
+            )
+
+            print(
+                "\nNavigation: [N]ext | [P]rev | "
+                "[J]ump Page | [R]efresh | [B]ack"
+            )
+
+            choice = input("Select option: ").strip().lower()
+
+            if choice == 'n':
+                if current_page < pagination["total_pages"]:
+                    current_page += 1
+
+            elif choice == 'p':
+                if current_page > 1:
+                    current_page -= 1
+
+            elif choice == 'j':
+                try:
+                    target_page = int(
+                        input(
+                            f"Enter Page Number "
+                            f"(1-{pagination['total_pages']}): "
+                        ).strip()
+                    )
+
+                    if 1 <= target_page <= pagination["total_pages"]:
+                        current_page = target_page
+                    else:
+                        print("[!] Page number out of bounds.")
+                        input("Press Enter...")
+
+                except ValueError:
+                    print("[!] Invalid page number.")
+                    input("Press Enter...")
+
+            elif choice == 'r':
+                current_page = 1
+
+            elif choice == 'b':
+                break
+
+        except Exception as error:
+            print(f"[!] Could not retrieve audit logs: {error}")
+            input("\nPress Enter to return...")
+            break
+
+
+
+
+def main():
+    """Initialize the database, authenticate, and show role-appropriate menus."""
+    global CURRENT_USER
+    db.init_db()
+
+    while True:
+        CURRENT_USER = login_workflow()
+        if CURRENT_USER is None:
+            print("\n[+] Exiting Agricultural Tracker System. Goodbye!")
+            return
+
+        while True:
+            clear_screen()
+            print_header("Agricultural Production Tracker & Yield Prediction System")
+            print(f"Logged in as: {CURRENT_USER['full_name']} ({CURRENT_USER['role'].upper()})")
+            print("-" * 85)
+
+            if CURRENT_USER['role'] == 'admin':
+                menu = {
+                    '1': ("View All Production Records", view_ledger_workflow),
+                    '2': ("Log New Planting Operation", log_planting_workflow),
+                    '3': ("Edit Production Record", edit_record_workflow),
+                    '4': ("Log Harvest Output", log_harvest_workflow),
+                    '5': ("Manage Production Expenses", manage_expenses_workflow),
+                    '6': ("Register New Crop Variety", register_crop_workflow),
+                    '7': ("Register New Farm Location", register_location_workflow),
+                    '8': ("Delete Production Record", delete_record_workflow),
+                    '9': ("Manage User Accounts", user_management_workflow),
+                    '10': ("Review Crop and Location Requests", review_requests_workflow),
+                    '11': ("View Audit Logs", audit_logs_workflow),
+                    '12': ("Executive Analytics and Charts", analytics_and_charts_workflow),
+                    '13': ("Logout", None),
+                    '14': ("Exit System", "exit"),
+                }
+            else:
+                menu = {
+                    '1': ("View My Production Ledger (includes search/filter)", view_ledger_workflow),
+                    '2': ("Log New Planting Operation", log_planting_workflow),
+                    '3': ("Edit My In-Progress Record", edit_record_workflow),
+                    '4': ("Log Harvest Output", log_harvest_workflow),
+                    '5': ("Manage My Production Expenses", manage_expenses_workflow),
+                    '6': ("Submit Crop Request", submit_crop_request_workflow),
+                    '7': ("Submit Location Request", submit_location_request_workflow),
+                    '8': ("Logout", None),
+                    '9': ("Exit System", "exit"),
+                }
+
+            for key, (label, _) in menu.items():
+                print(f"[{key:>2}] {label}")
+            print("=" * 85)
+            choice = input("Select an option: ").strip()
+
+            if choice not in menu:
+                print("[!] Invalid selection.")
+                input("Press Enter to continue...")
+                continue
+
+            label, action = menu[choice]
+            if label == "Logout":
+                print(f"\n[+] Logging out {CURRENT_USER['username']}...")
+                CURRENT_USER = None
+                break
+            if action == "exit":
+                print("\n[+] Exiting Agricultural Tracker System. Goodbye!")
+                CURRENT_USER = None
+                return
+            action()
 
 
 if __name__ == "__main__":
