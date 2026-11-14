@@ -219,6 +219,56 @@ def fetch_expenses_by_record(record_id: int, user_id: int) -> List[Dict[str, Any
                 (record_id, role, user_id),
             )
             return cur.fetchall()
+        
+def fetch_analytics_records(performed_by: int) -> List[Dict[str, Any]]:
+    """Retrieve all production records for administrator-only analytics."""
+    with get_connection() as conn:
+        _require_admin(conn, performed_by)
+        with conn.cursor() as cur:
+            cur.execute(
+                _RECORD_SELECT + " ORDER BY p.record_id ASC"
+            )
+            return cur.fetchall()
+
+
+
+def fetch_expense_category_totals(
+    performed_by: int,
+    record_ids: Optional[List[int]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Retrieve expense totals by category for administrator-only analytics.
+
+    If record_ids is provided, only expenses belonging to those
+    production records are included. An empty list returns no results.
+    """
+    with get_connection() as conn:
+        _require_admin(conn, performed_by)
+
+        if record_ids is not None and not record_ids:
+            return []
+
+        with conn.cursor() as cur:
+            query = """
+                SELECT
+                    expense_category AS category,
+                    SUM(amount_php) AS total_amount
+                FROM production_expenses
+            """
+
+            if record_ids is not None:
+                query += " WHERE record_id = ANY(%s)"
+                params = (record_ids,)
+            else:
+                params = ()
+
+            query += """
+                GROUP BY expense_category
+                ORDER BY expense_category ASC
+            """
+
+            cur.execute(query, params)
+            return cur.fetchall()
 
 
 def _authorize_record_access(conn, record_id: int, user_id: int) -> Dict[str, Any]:

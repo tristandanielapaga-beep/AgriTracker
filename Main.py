@@ -6,6 +6,7 @@ from typing import List, Dict, Any
 import database as db
 import functions as fn
 import analytics as an
+import monitoring as mon
 import auth
 
 
@@ -856,30 +857,264 @@ def register_location_workflow():
     input("\nPress Enter to return to main menu...")
 
 
+
+
 def analytics_and_charts_workflow():
-    """Executes analytics summaries and generates Matplotlib charts."""
+    """Interactive administrator analytics with optional filters."""
     clear_screen()
     print_header("Executive Analytics & Visual Charts")
 
-    an.print_cli_analytics_report()
+    admin_user_id = current_user_id()
 
-    print("\n[1] Generate All 7 Visual Analytical Charts (Saved to charts/)")
-    print("[2] Filter Analytics Report by Year")
-    print("[3] Back to Main Menu")
+    filters = an.empty_filters()
+    options = an.get_filter_options(admin_user_id)
 
-    choice = input("\nSelect an option (1-3): ").strip()
-    if choice == '1':
-        print("\nGenerating charts...")
-        files = an.generate_all_charts()
-        print(f"\n[+] Charts successfully generated and saved to 'charts/':")
-        for k, filepath in files.items():
-            print(f"  - {filepath}")
-        input("\nPress Enter to continue...")
-    elif choice == '2':
-        year_str = input("\nEnter Year to filter (e.g., 2024, 2025, 2026): ").strip()
+    filter_labels = {
+        "year": "Planting Year",
+        "category": "Crop Category",
+        "crop_name": "Specific Crop",
+        "location_name": "Location",
+        "created_by": "Record Creator",
+        "status": "Production Status",
+    }
+
+    def choose_filter(title, choices, current_value):
+        print(f"\nFILTER BY {title.upper()}")
+        print("-" * 55)
+
+        print(f"Current selection: {current_value if current_value is not None else 'All'}")
+
+        if choices:
+            for index, item in enumerate(choices, start=1):
+                label = item["label"] if isinstance(item, dict) else str(item)
+                print(f"[{index}] {label}")
+        else:
+            print("No available values.")
+
+        print("[0] Clear this filter")
+        print("[Enter] Keep current selection")
+
+        while True:
+            selection = input("\nSelect an option: ").strip()
+
+            if selection == "":
+                return current_value
+
+            if selection == "0":
+                return None
+
+            if not selection.isdigit():
+                print("[!] Enter a valid option.")
+                continue
+
+            index = int(selection) - 1
+
+            if 0 <= index < len(choices):
+                selected = choices[index]
+
+                if isinstance(selected, dict):
+                    return selected["value"]
+
+                return selected
+
+            print("[!] Invalid selection.")
+
+    def get_crop_options():
+        """Return crops matching the currently selected category."""
+        crop_df = an.fetch_analytics_dataframe(
+            admin_user_id,
+            filters={"category": filters["category"]},
+        )
+
+        if crop_df.empty:
+            return []
+
+        return sorted(
+            crop_df["crop_name"].dropna().unique().tolist()
+        )
+
+    while True:
         clear_screen()
-        an.print_cli_analytics_report(year=year_str)
-        input("\nPress Enter to continue...")
+        print_header("Executive Analytics & Visual Charts")
+
+        an.print_active_filters(filters, options)
+
+        print("\nFILTER OPTIONS")
+        print("[1] Filter by Planting Year")
+        print("[2] Filter by Crop Category")
+        print("[3] Filter by Specific Crop")
+        print("[4] Filter by Location")
+        print("[5] Filter by Record Creator")
+        print("[6] Filter by Production Status")
+        print("[7] Clear an Individual Filter")
+
+        print("\nANALYTICS")
+        print("[8] View Executive KPI Report")
+        print("[9] Generate All 7 Analytical Charts")
+        print("[10] View Model Monitoring Report")
+        print("[0] Back to Main Menu")
+
+        choice = input("\nSelect an option: ").strip()
+
+        if choice == "1":
+            filters["year"] = choose_filter(
+                "Planting Year",
+                options["years"],
+                filters["year"],
+            )
+
+        elif choice == "2":
+            old_crop = filters["crop_name"]
+
+            filters["category"] = choose_filter(
+                "Crop Category",
+                options["categories"],
+                filters["category"],
+            )
+
+            # Check whether the existing crop still belongs
+            # to the newly selected category.
+            available_crops = get_crop_options()
+
+            if old_crop is not None and old_crop not in available_crops:
+                filters["crop_name"] = None
+                print(
+                    f"\n[!] Previous crop selection '{old_crop}' "
+                    "was cleared because it does not belong "
+                    "to the selected category."
+                )
+
+        elif choice == "3":
+            available_crops = get_crop_options()
+
+            filters["crop_name"] = choose_filter(
+                "Specific Crop",
+                available_crops,
+                filters["crop_name"],
+            )
+
+        elif choice == "4":
+            filters["location_name"] = choose_filter(
+                "Location",
+                options["locations"],
+                filters["location_name"],
+            )
+
+        elif choice == "5":
+            filters["created_by"] = choose_filter(
+                "Record Creator",
+                options["creators"],
+                filters["created_by"],
+            )
+
+        elif choice == "6":
+            filters["status"] = choose_filter(
+                "Production Status",
+                options["statuses"],
+                filters["status"],
+            )
+
+        elif choice == "7":
+            print("\nSELECT FILTER TO CLEAR")
+            print("-" * 40)
+
+            active_keys = [
+                key for key, value in filters.items()
+                if value is not None
+            ]
+
+            if not active_keys:
+                print("There are no active filters.")
+                input("\nPress Enter to continue...")
+                continue
+
+            for index, key in enumerate(active_keys, start=1):
+                print(f"[{index}] {filter_labels[key]}")
+
+            print("[0] Cancel")
+
+            selection = input("\nSelect a filter: ").strip()
+
+            if selection == "0":
+                continue
+
+            if selection.isdigit():
+                index = int(selection) - 1
+
+                if 0 <= index < len(active_keys):
+                    key_to_clear = active_keys[index]
+                    filters[key_to_clear] = None
+
+                    print(
+                        f"\n[+] {filter_labels[key_to_clear]} "
+                        "filter cleared."
+                    )
+                else:
+                    print("\n[!] Invalid selection.")
+            else:
+                print("\n[!] Invalid selection.")
+
+            input("\nPress Enter to continue...")
+            continue
+
+        elif choice == "8":
+            clear_screen()
+            print_header("Executive KPI Report")
+
+            an.print_cli_analytics_report(
+                admin_user_id,
+                filters=filters,
+            )
+
+            input("\nPress Enter to return...")
+
+        elif choice == "9":
+            clear_screen()
+            print_header("Generate Analytical Charts")
+
+            print("Generating charts using active filters...")
+            an.print_active_filters(filters, options)
+
+            files = an.generate_all_charts(
+                admin_user_id,
+                filters=filters,
+            )
+
+            if files:
+                print("\n[+] Generated charts:")
+
+                for filepath in files.values():
+                    print(f"  - {filepath}")
+
+                if len(files) < 7:
+                    print(
+                        "\n[!] Some charts were skipped because "
+                        "the selected records lack the required data."
+                    )
+            else:
+                print("\n[!] No charts were generated.")
+
+            input("\nPress Enter to return...")
+
+        elif choice == "10":
+            clear_screen()
+            print_header("Model Monitoring Report")
+
+            mon.print_model_monitoring_report(admin_user_id)
+
+            input("\nPress Enter to return...")
+
+        elif choice == "0":
+            break
+
+        elif choice in ("1", "2", "3", "4", "5", "6"):
+            print("\n[+] Filter updated.")
+            input("Press Enter to continue...")
+
+        else:
+            print("\n[!] Invalid option.")
+            input("Press Enter to continue...")
+
 
 
 
