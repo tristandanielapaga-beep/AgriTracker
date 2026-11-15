@@ -23,3 +23,4 @@ charts/*.png
 
 #modeling
 data/
+.env.local.backup
