@@ -1,4 +1,17 @@
-pandas
-numpy
-scikit-learn
-matplotlib
+# AgriTracker - PostgreSQL CLI application
+# Install with: python -m pip install -r requirements.txt
+
+# Database connectivity and environment variables
+psycopg[binary]>=3.2,<4
+python-dotenv>=1.0,<2
+
+# Authentication
+bcrypt>=4.1,<6
+
+# Data processing and machine learning
+numpy>=1.26,<3
+pandas>=2.1,<4
+scikit-learn>=1.4,<2
+
+# Analytics and chart generation
+matplotlib>=3.8,<4
